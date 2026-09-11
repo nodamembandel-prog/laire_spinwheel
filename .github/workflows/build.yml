@@ -19,13 +19,6 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter create --platforms=android .
-      
-      # JURUS PAMUNGKAS ANDROID: Paksa SDK ke versi 34
-      - name: Force Android SDK
-        run: |
-          echo "flutter.compileSdkVersion=34" >> android/local.properties
-          echo "flutter.minSdkVersion=23" >> android/local.properties
-          
       - run: flutter pub get
       - run: flutter build apk --release
       - name: Upload APK
@@ -44,11 +37,6 @@ jobs:
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
       - run: flutter create --platforms=windows .
-      
-      # JURUS PAMUNGKAS WINDOWS: Suntik paksa pengabaian error ke file CMake
-      - name: Force Silence C++ Warnings
-        run: Add-Content -Path windows\CMakeLists.txt -Value "add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)"
-        
       - run: flutter pub get
       - run: flutter build windows --release
       - name: Upload Windows EXE
