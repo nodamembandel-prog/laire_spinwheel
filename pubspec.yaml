@@ -33,3 +33,4 @@ flutter:
   assets:
     - assets/Preview-4.png
     - assets/spin_sound.mp3
+    - assets/win_sound.mp3
