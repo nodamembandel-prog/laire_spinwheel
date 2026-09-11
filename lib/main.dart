@@ -10,6 +10,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:confetti/confetti.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +35,7 @@ void main() async {
 }
 
 enum AppMode { selection, operator, display }
-enum ColorTarget { background, box, popup } 
+enum ColorTarget { background, box, popup, logoBg } // Tambah target logoBg
 
 class WinnerData {
   String name;
@@ -53,23 +54,29 @@ class AppState extends ChangeNotifier {
   String eventTitle = "LAIRE GRAND PRIZE";
   Color backgroundColor = const Color(0xFF0F172A); 
   Color boxColor = const Color(0xAA000000); 
-  Color popupColor = const Color(0xFFD4AF37); // Warna Popup Pemenang
+  Color popupColor = const Color(0xFFD4AF37); 
+  Color logoBgColor = const Color(0xFF000000); // Warna default background logo (Hitam Solid)
   
-  String? backgroundBase64; // Untuk dikirim ke layar 2
-  Uint8List? backgroundBytes; // Caching memori agar tidak getar/lag
+  String? backgroundBase64; 
+  Uint8List? backgroundBytes; 
   bool showWinnerList = false; 
   
   bool isSpinning = false;
   String? rollingText; 
   String? finalWinner;
   
-  final AudioPlayer audioPlayer = AudioPlayer();
+  // Audio Players terpisah agar tidak bentrok
+  final AudioPlayer spinAudioPlayer = AudioPlayer();
+  final AudioPlayer winAudioPlayer = AudioPlayer();
 
   ServerSocket? _serverSocket;
   final List<Socket> _clients = [];
   Socket? _clientSocket;
   String _socketBuffer = '';
+  
   Timer? _rollTimer;
+  StreamSubscription? _audioSub;
+  Timer? _fallbackTimer;
 
   void setMode(AppMode mode) {
     currentMode = mode;
@@ -119,6 +126,7 @@ class AppState extends ChangeNotifier {
       'bgColor': backgroundColor.value,
       'boxColor': boxColor.value,
       'popupColor': popupColor.value,
+      'logoBgColor': logoBgColor.value, // Kirim warna background logo
       'bgBase64': backgroundBase64,
       'showWinnerList': showWinnerList,
     });
@@ -167,9 +175,9 @@ class AppState extends ChangeNotifier {
           backgroundColor = Color(decoded['bgColor']);
           boxColor = Color(decoded['boxColor']);
           popupColor = Color(decoded['popupColor'] ?? 0xFFD4AF37);
+          logoBgColor = Color(decoded['logoBgColor'] ?? 0xFF000000); // Terima warna background logo
           showWinnerList = decoded['showWinnerList'];
           
-          // Mengubah Base64 ke memori fisik (Uint8List) 1 KALI SAJA agar tidak lag
           backgroundBase64 = decoded['bgBase64'];
           if (backgroundBase64 != null) {
             backgroundBytes = base64Decode(backgroundBase64!);
@@ -187,9 +195,11 @@ class AppState extends ChangeNotifier {
           notifyListeners();
           break;
         case 'start_roll':
+          try { await spinAudioPlayer.play(AssetSource('spin_sound.mp3')); } catch(e){}
           _startRollingEffect();
           break;
         case 'stop_roll':
+          try { await winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
           _stopRollingEffect(decoded['winner']);
           break;
         case 'clear_popup':
@@ -243,6 +253,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateLogoBgColor(Color color) {
+    logoBgColor = color;
+    _broadcastConfig();
+    notifyListeners();
+  }
+
   Future<void> pickBackgroundImage() async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
     if (result != null) {
@@ -284,6 +300,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ================= LOGIKA UNDIAN (SINKRONISASI SUARA) =================
   void startRaffle() async {
     if (isSpinning || participants.isEmpty) return;
     
@@ -291,10 +308,17 @@ class AppState extends ChangeNotifier {
     _startRollingEffect(); 
 
     try {
-      await audioPlayer.play(AssetSource('spin_sound.mp3'));
+      await spinAudioPlayer.play(AssetSource('spin_sound.mp3'));
     } catch (e) {}
 
-    Future.delayed(const Duration(seconds: 4), () {
+    _audioSub?.cancel();
+    _fallbackTimer?.cancel();
+
+    void finishRaffle() {
+      _audioSub?.cancel();
+      _fallbackTimer?.cancel();
+      if (!isSpinning) return;
+
       int winningIndex = Random().nextInt(participants.length);
       String won = participants[winningIndex];
       
@@ -303,12 +327,17 @@ class AppState extends ChangeNotifier {
       
       _broadcastCommand('stop_roll', {'winner': won});
       _stopRollingEffect(won);
+
+      try { winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
       
       Future.delayed(const Duration(milliseconds: 500), () {
         _broadcastParticipants();
         _broadcastWinners();
       });
-    });
+    }
+
+    _audioSub = spinAudioPlayer.onPlayerComplete.listen((_) => finishRaffle());
+    _fallbackTimer = Timer(const Duration(seconds: 10), () => finishRaffle());
   }
 
   void _startRollingEffect() {
@@ -328,6 +357,15 @@ class AppState extends ChangeNotifier {
     rollingText = null;
     finalWinner = winner;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    spinAudioPlayer.dispose();
+    winAudioPlayer.dispose();
+    _audioSub?.cancel();
+    _fallbackTimer?.cancel();
+    super.dispose();
   }
 }
 
@@ -467,6 +505,14 @@ class OperatorScreen extends StatelessWidget {
                     label: const Text('4. Ganti WARNA Popup Pemenang'), 
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, padding: const EdgeInsets.all(12)),
                     onPressed: () => _showColorPicker(context, state, ColorTarget.popup)
+                  ),
+                  const SizedBox(height: 8),
+                  // TOMBOL BARU UNTUK WARNA BACKGROUND LOGO
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.stadium), 
+                    label: const Text('5. Ganti WARNA Background Logo'), 
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white, padding: const EdgeInsets.all(12)),
+                    onPressed: () => _showColorPicker(context, state, ColorTarget.logoBg)
                   ),
                   const SizedBox(height: 25),
 
@@ -613,9 +659,12 @@ class OperatorScreen extends StatelessWidget {
     } else if (target == ColorTarget.box) {
       tempColor = state.boxColor;
       title = 'Pilih Warna Box Angka';
-    } else {
+    } else if (target == ColorTarget.popup) {
       tempColor = state.popupColor;
       title = 'Pilih Warna Popup Pemenang';
+    } else {
+      tempColor = state.logoBgColor;
+      title = 'Pilih Warna Background Logo';
     }
     
     showDialog(
@@ -633,8 +682,10 @@ class OperatorScreen extends StatelessWidget {
                     state.updateBackgroundColor(color);
                   } else if (target == ColorTarget.box) {
                     state.updateBoxColor(color);
-                  } else {
+                  } else if (target == ColorTarget.popup) {
                     state.updatePopupColor(color);
+                  } else {
+                    state.updateLogoBgColor(color);
                   }
                 },
                 enableAlpha: true,
@@ -657,16 +708,42 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= KOMPONEN RAFFLE DISPLAY UTAMA (VIRTUAL CANVAS 1080P) =================
-class RaffleDisplayView extends StatelessWidget {
+// ================= KOMPONEN RAFFLE DISPLAY UTAMA =================
+class RaffleDisplayView extends StatefulWidget {
   final bool isPreview;
   const RaffleDisplayView({Key? key, required this.isPreview}) : super(key: key);
+
+  @override
+  State<RaffleDisplayView> createState() => _RaffleDisplayViewState();
+}
+
+class _RaffleDisplayViewState extends State<RaffleDisplayView> {
+  late ConfettiController _confettiController;
+  String? _previousWinner;
+
+  @override
+  void initState() {
+    super.initState();
+    _confettiController = ConfettiController(duration: const Duration(seconds: 4));
+  }
+
+  @override
+  void dispose() {
+    _confettiController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
-    // KANVAS VIRTUAL ABSOLUT (1920x1080)
+    if (state.finalWinner != null && state.finalWinner != _previousWinner && !widget.isPreview) {
+      _previousWinner = state.finalWinner;
+      _confettiController.play();
+    } else if (state.finalWinner == null) {
+      _previousWinner = null;
+    }
+    
     Widget canvas = Container(
       width: 1920,
       height: 1080,
@@ -696,7 +773,7 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
                 const SizedBox(height: 80),
                 
-                // BOX RAFFLE (BENTUK STATIS, TIDAK ADA KEDIPAN/GETAR)
+                // BOX RAFFLE 
                 Container(
                   width: 1200,
                   height: 350,
@@ -723,8 +800,8 @@ class RaffleDisplayView extends StatelessWidget {
             ),
           ),
 
-          // OVERLAY DAFTAR PEMENANG 
-          if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
+          // OVERLAY DAFTAR PEMENANG
+          if (!widget.isPreview && state.showWinnerList && state.winners.isNotEmpty)
             Align(
               alignment: Alignment.centerRight,
               child: Padding(
@@ -770,7 +847,7 @@ class RaffleDisplayView extends StatelessWidget {
               ),
             ),
 
-          // LOGO LAIRE CREATIVE STUDIO
+          // LOGO LAIRE CREATIVE STUDIO (WARNA BACKGROUND BISA DIUBAH DARI OPERATOR)
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -778,7 +855,7 @@ class RaffleDisplayView extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 20),
                 decoration: BoxDecoration(
-                    color: Colors.black, 
+                    color: state.logoBgColor, // Background Logo yang bisa diganti
                     borderRadius: BorderRadius.circular(100), 
                     border: Border.all(color: Colors.amber, width: 3), 
                     boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, spreadRadius: 5)]
@@ -795,7 +872,7 @@ class RaffleDisplayView extends StatelessWidget {
             ),
           ),
 
-          // POPUP ANIMASI ZOOM IN PEMENANG (WARNA BISA DIKUSTOMISASI)
+          // POPUP ANIMASI ZOOM IN PEMENANG
           if (state.finalWinner != null)
             Positioned.fill(
               child: Container(
@@ -811,7 +888,7 @@ class RaffleDisplayView extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 150, vertical: 100),
                           decoration: BoxDecoration(
-                            color: state.popupColor, // Menggunakan warna dari Operator
+                            color: state.popupColor, 
                             borderRadius: BorderRadius.circular(50), 
                             border: Border.all(color: Colors.white, width: 10), 
                             boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.5), blurRadius: 150, spreadRadius: 50)]
@@ -831,18 +908,31 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
               ),
             ),
+            
+          // EFEK CONFETTI
+          if (!widget.isPreview)
+            Align(
+              alignment: Alignment.center,
+              child: ConfettiWidget(
+                confettiController: _confettiController,
+                blastDirectionality: BlastDirectionality.explosive,
+                shouldLoop: false,
+                colors: const [Colors.green, Colors.blue, Colors.pink, Colors.orange, Colors.purple, Colors.yellow],
+                numberOfParticles: 150,
+                gravity: 0.1,
+              ),
+            ),
         ],
       ),
     );
 
-    // KUNCI RASIO 16:9 DENGAN FITTEDBOX & LETTERBOX
     return Container(
-      color: Colors.black, // Memberikan garis hitam otomatis jika proyektor bukan 16:9
+      color: Colors.black, 
       child: Center(
         child: AspectRatio(
           aspectRatio: 16 / 9,
           child: FittedBox(
-            fit: BoxFit.contain, // Memaksa canvas 1920x1080 di-zoom sesuai layar
+            fit: BoxFit.contain, 
             child: canvas,
           ),
         ),
