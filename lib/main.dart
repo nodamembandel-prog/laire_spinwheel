@@ -64,7 +64,6 @@ class AppState extends ChangeNotifier {
   String? finalWinner;
   
   final AudioPlayer spinAudioPlayer = AudioPlayer();
-  final AudioPlayer winAudioPlayer = AudioPlayer();
 
   ServerSocket? _serverSocket;
   final List<Socket> _clients = [];
@@ -194,13 +193,12 @@ class AppState extends ChangeNotifier {
           try { await spinAudioPlayer.play(AssetSource('spin_sound.mp3')); } catch(e){}
           isSpinning = true;
           finalWinner = null;
-          notifyListeners(); // Notify hanya sekali saat mulai
+          notifyListeners();
           break;
         case 'stop_roll':
-          try { await winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
           isSpinning = false;
           finalWinner = decoded['winner'];
-          notifyListeners(); // Notify hanya sekali saat berhenti
+          notifyListeners();
           break;
         case 'clear_popup':
           finalWinner = null;
@@ -333,8 +331,6 @@ class AppState extends ChangeNotifier {
       notifyListeners();
 
       _broadcastCommand('stop_roll', {'winner': won});
-
-      try { winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
       
       Future.delayed(const Duration(milliseconds: 500), () {
         _broadcastParticipants();
@@ -349,7 +345,6 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     spinAudioPlayer.dispose();
-    winAudioPlayer.dispose();
     _audioSub?.cancel();
     _fallbackTimer?.cancel();
     super.dispose();
@@ -395,7 +390,7 @@ class ModeSelectionScreen extends StatelessWidget {
                 children: [
                   Image.asset('assets/Preview-4.png', height: 40, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber)),
                   const SizedBox(width: 15),
-                  const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 3.0, fontSize: 18)),
+                  const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.w900, letterSpacing: 3.0, fontSize: 18)),
                 ],
               ),
             ),
@@ -694,7 +689,7 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= ISOLASI WIDGET ANIMASI (MENCEGAH BACKGROUND KEDIP) =================
+// ================= ISOLASI WIDGET ANIMASI (ANTI-KEDIP) =================
 class RollingTextWidget extends StatefulWidget {
   final bool isSpinning;
   final String? finalWinner;
@@ -795,7 +790,6 @@ class RaffleDisplayView extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
-    // KANVAS VIRTUAL ABSOLUT (1920x1080)
     Widget canvas = Container(
       width: 1920,
       height: 1080,
@@ -825,7 +819,7 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
                 const SizedBox(height: 80),
                 
-                // ISOLASI BOX RAFFLE AGAR BACKGROUND TIDAK KEDIP
+                // KOTAK ANGKA TERISOLASI
                 RollingTextWidget(
                   isSpinning: state.isSpinning,
                   finalWinner: state.finalWinner,
@@ -837,7 +831,7 @@ class RaffleDisplayView extends StatelessWidget {
             ),
           ),
 
-          // OVERLAY DAFTAR PEMENANG
+          // OVERLAY DAFTAR PEMENANG 
           if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
             Align(
               alignment: Alignment.centerRight,
@@ -902,21 +896,21 @@ class RaffleDisplayView extends StatelessWidget {
                   children: [
                     Image.asset('assets/Preview-4.png', height: 50, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber, size: 50)),
                     const SizedBox(width: 25),
-                    const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 4.0, fontSize: 26)),
+                    const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.w900, letterSpacing: 4.0, fontSize: 26)),
                   ],
                 ),
               ),
             ),
           ),
 
-          // POPUP PEMENANG (BLOK HITAM DIHILANGKAN - DIGANTI BAYANGAN HALUS)
+          // POPUP ANIMASI ZOOM IN PEMENANG (BLOK HITAM DIHAPUS)
           if (state.finalWinner != null)
             Positioned.fill(
               child: Container(
-                color: Colors.black.withOpacity(0.4), // RONA HITAM DIKURANGI DRASTIS (Tidak memblokir layar)
+                color: Colors.black.withOpacity(0.4), // Blok Hitam Transparan Halus
                 child: Center(
                   child: TweenAnimationBuilder<double>(
-                    tween: Tween<double>(begin: 0.8, end: 1.0), // Efek Pulsing (Berdenyut)
+                    tween: Tween<double>(begin: 0.8, end: 1.0),
                     duration: const Duration(milliseconds: 600),
                     curve: Curves.elasticOut,
                     builder: (context, scale, child) {
@@ -925,7 +919,7 @@ class RaffleDisplayView extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 150, vertical: 100),
                           decoration: BoxDecoration(
-                            color: state.popupColor, // Warna disesuaikan dari Operator
+                            color: state.popupColor, 
                             borderRadius: BorderRadius.circular(50), 
                             border: Border.all(color: Colors.white, width: 10), 
                             boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.8), blurRadius: 100, spreadRadius: 20)]
@@ -949,9 +943,8 @@ class RaffleDisplayView extends StatelessWidget {
       ),
     );
 
-    // KUNCI RASIO 16:9 DENGAN FITTEDBOX & LETTERBOX
     return Container(
-      color: Colors.black, // Memberikan garis hitam otomatis jika proyektor bukan 16:9
+      color: Colors.black, 
       child: Center(
         child: AspectRatio(
           aspectRatio: 16 / 9,
