@@ -3,7 +3,7 @@ name: Build Laire Spinwheel
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Memungkinkan Anda memicu build secara manual
+  workflow_dispatch:
 
 jobs:
   build-android:
@@ -18,6 +18,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+      # PERBAIKAN: Menyuruh Flutter membuat folder 'android' terlebih dahulu
+      - run: flutter create --platforms=android .
       - run: flutter pub get
       - run: flutter build apk --release
       - name: Upload APK
@@ -35,6 +37,8 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
+      # PERBAIKAN: Menyuruh Flutter membuat folder 'windows' terlebih dahulu
+      - run: flutter create --platforms=windows .
       - run: flutter pub get
       - run: flutter build windows --release
       - name: Upload Windows EXE
@@ -52,6 +56,8 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-macos-desktop
+      # PERBAIKAN: Menyuruh Flutter membuat folder 'macos' terlebih dahulu
+      - run: flutter create --platforms=macos .
       - run: flutter pub get
       - run: flutter build macos --release
       - name: Upload macOS App
