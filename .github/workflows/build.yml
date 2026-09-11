@@ -6,36 +6,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v5 # PERBAIKAN: Menggunakan versi Java terbaru (v5)
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-      - run: flutter create --platforms=android .
-      
-      # PERBAIKAN: Memaksa SDK 34 untuk kompatibilitas suara
-      - name: Update Android SDK Settings
-        run: |
-          sed -i 's/flutter.compileSdkVersion/34/g' android/app/build.gradle || true
-          sed -i 's/flutter.minSdkVersion/23/g' android/app/build.gradle || true
-          echo "flutter.compileSdkVersion=34" >> android/local.properties
-          echo "flutter.minSdkVersion=23" >> android/local.properties
-          
-      - run: flutter pub get
-      - run: flutter build apk --release
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: LaireSpinwheel-Android
-          path: build/app/outputs/flutter-apk/app-release.apk
-
   build-windows:
     name: Build Windows EXE
     runs-on: windows-latest
@@ -45,14 +15,14 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
-      - run: flutter create --platforms=windows .
       - run: flutter pub get
+      - name: Generate App Icon
+        run: flutter pub run flutter_launcher_icons
       - run: flutter build windows --release
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: LaireSpinwheel-Windows
-          # PERBAIKAN: Menambahkan folder x64 pada jalur pencarian EXE
+          name: LaireRaffle-Windows
           path: build\windows\x64\runner\Release\*
 
   build-macos:
@@ -64,11 +34,12 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-macos-desktop
-      - run: flutter create --platforms=macos .
       - run: flutter pub get
+      - name: Generate App Icon
+        run: flutter pub run flutter_launcher_icons
       - run: flutter build macos --release
       - name: Upload macOS App
         uses: actions/upload-artifact@v4
         with:
-          name: LaireSpinwheel-macOS
+          name: LaireRaffle-macOS
           path: build/macos/Build/Products/Release/*.app
