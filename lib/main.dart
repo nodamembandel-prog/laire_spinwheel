@@ -34,7 +34,7 @@ void main() async {
 }
 
 enum AppMode { selection, operator, display }
-enum ColorTarget { background, box, popup } // Target kustomisasi warna
+enum ColorTarget { background, box, popup } 
 
 class WinnerData {
   String name;
@@ -53,7 +53,7 @@ class AppState extends ChangeNotifier {
   String eventTitle = "LAIRE GRAND PRIZE";
   Color backgroundColor = const Color(0xFF0F172A); 
   Color boxColor = const Color(0xAA000000); 
-  Color popupColor = const Color(0xFFD4AF37); // Warna Default Popup Pemenang (Emas)
+  Color popupColor = const Color(0xFFD4AF37); 
   
   String? backgroundBase64;
   bool showWinnerList = false; 
@@ -647,7 +647,7 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= KOMPONEN RAFFLE DISPLAY UTAMA =================
+// ================= KOMPONEN RAFFLE DISPLAY UTAMA (VIRTUAL CANVAS 1080P) =================
 class RaffleDisplayView extends StatelessWidget {
   final bool isPreview;
   const RaffleDisplayView({Key? key, required this.isPreview}) : super(key: key);
@@ -656,141 +656,183 @@ class RaffleDisplayView extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
-    // Kunci Rasio 16:9 Absolut. Mengatasi perbedaan rasio laptop dan proyektor.
-    return Center(
-      child: AspectRatio(
-        aspectRatio: 16 / 9,
-        child: Container(
-          decoration: BoxDecoration(
-            color: state.backgroundColor,
-            image: state.backgroundBase64 != null ? DecorationImage(image: MemoryImage(base64Decode(state.backgroundBase64!)), fit: BoxFit.cover) : null,
+    // KANVAS VIRTUAL ABSOLUT (1920x1080)
+    // Trik ini menjamin 100% tata letak di preview laptop dan proyektor kembar identik
+    Widget canvas = Container(
+      width: 1920,
+      height: 1080,
+      decoration: BoxDecoration(
+        color: state.backgroundColor,
+        image: state.backgroundBase64 != null 
+            ? DecorationImage(image: MemoryImage(base64Decode(state.backgroundBase64!)), fit: BoxFit.cover) 
+            : null,
+      ),
+      child: Stack(
+        children: [
+          // JUDUL & NOMOR BERGULIR
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  state.eventTitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 90, 
+                      fontWeight: FontWeight.w900, 
+                      color: Colors.amber, 
+                      letterSpacing: 8.0, 
+                      shadows: [Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 5))]
+                  ),
+                ),
+                const SizedBox(height: 80),
+                
+                // BOX RAFFLE
+                Container(
+                  width: 1200,
+                  height: 350,
+                  decoration: BoxDecoration(
+                    color: state.boxColor,
+                    borderRadius: BorderRadius.circular(40),
+                    border: Border.all(color: Colors.white24, width: 4), 
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    state.rollingText ?? (state.participants.isEmpty ? "READY" : "STANDBY"),
+                    style: const TextStyle(
+                        fontFamily: 'Courier', 
+                        fontSize: 160, 
+                        fontWeight: FontWeight.w900, 
+                        color: Colors.white, 
+                        letterSpacing: 10.0
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-          child: Stack(
-            children: [
-              // JUDUL & NOMOR BERGULIR
-              Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+
+          // OVERLAY DAFTAR PEMENANG 
+          if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 80),
+                child: Container(
+                  width: 500, 
+                  padding: const EdgeInsets.all(30),
+                  decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.85), 
+                      borderRadius: BorderRadius.circular(25), 
+                      border: Border.all(color: Colors.amber, width: 3)
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, 
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("DAFTAR PEMENANG", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w900, fontSize: 30, letterSpacing: 3)),
+                      const Divider(color: Colors.white24, thickness: 2, height: 30),
+                      ...state.winners.take(5).map((w) {
+                        bool isHangus = w.status == 'HANGUS';
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(w.name, 
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontFamily: 'Courier', color: isHangus ? Colors.redAccent : Colors.white, fontWeight: FontWeight.bold, fontSize: 34, decoration: isHangus ? TextDecoration.lineThrough : null)
+                                ),
+                              ),
+                              if (isHangus) 
+                                const Text("HANGUS", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 24))
+                              else if (w.status == 'SAH') 
+                                const Icon(Icons.check_circle, color: Colors.green, size: 36)
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          // LOGO LAIRE CREATIVE STUDIO
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 60),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 20),
+                decoration: BoxDecoration(
+                    color: Colors.black, 
+                    borderRadius: BorderRadius.circular(100), 
+                    border: Border.all(color: Colors.amber, width: 3), 
+                    boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, spreadRadius: 5)]
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      state.eventTitle,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: isPreview ? 20 : 60, fontWeight: FontWeight.w900, color: Colors.amber, letterSpacing: 4.0, shadows: const [Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 5))]),
-                    ),
-                    SizedBox(height: isPreview ? 20 : 60),
-                    
-                    // BOX RAFFLE (EFEK FLASH DAN GETAR DIHAPUS - TETAP TENANG)
-                    Container(
-                      width: isPreview ? 250 : 800,
-                      height: isPreview ? 80 : 250,
-                      decoration: BoxDecoration(
-                        color: state.boxColor,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.white24, width: 2), // Tetap statis, tidak berkedip
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        state.rollingText ?? (state.participants.isEmpty ? "READY" : "STANDBY"),
-                        style: TextStyle(fontFamily: 'Courier', fontSize: isPreview ? 35 : 120, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 5.0),
-                      ),
-                    ),
+                    Image.asset('assets/Preview-4.png', height: 50, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber, size: 50)),
+                    const SizedBox(width: 25),
+                    const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 4.0, fontSize: 26)),
                   ],
                 ),
               ),
+            ),
+          ),
 
-              // OVERLAY DAFTAR PEMENANG 
-              if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 50),
-                    child: Container(
-                      width: 350, padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(color: Colors.black.withOpacity(0.85), borderRadius: BorderRadius.circular(15), border: Border.all(color: Colors.amber, width: 2)),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min, 
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text("DAFTAR PEMENANG", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w900, fontSize: 20, letterSpacing: 2)),
-                          const Divider(color: Colors.white24),
-                          ...state.winners.take(5).map((w) {
-                            bool isHangus = w.status == 'HANGUS';
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 8.0),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(w.name, style: TextStyle(fontFamily: 'Courier', color: isHangus ? Colors.redAccent : Colors.white, fontWeight: FontWeight.bold, fontSize: 24, decoration: isHangus ? TextDecoration.lineThrough : null)),
-                                  if (isHangus) const Text("HANGUS", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 16))
-                                  else if (w.status == 'SAH') const Icon(Icons.check_circle, color: Colors.green)
-                                ],
-                              ),
-                            );
-                          }).toList(),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-              // LOGO LAIRE CREATIVE STUDIO
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: Padding(
-                  padding: EdgeInsets.only(bottom: isPreview ? 10 : 30),
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: isPreview ? 15 : 30, vertical: isPreview ? 5 : 12),
-                    decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(50), border: Border.all(color: Colors.amber, width: 1), boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10, spreadRadius: 2)]),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Image.asset('assets/Preview-4.png', height: isPreview ? 12 : 28, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber)),
-                        SizedBox(width: isPreview ? 8 : 15),
-                        Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 2.0, fontSize: isPreview ? 8 : 15)),
-                      ],
-                    ),
+          // POPUP ANIMASI ZOOM IN PEMENANG (WARNA BISA DIKUSTOMISASI)
+          if (state.finalWinner != null)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black.withOpacity(0.9),
+                child: Center(
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween<double>(begin: 0.1, end: 1.0),
+                    duration: const Duration(milliseconds: 800),
+                    curve: Curves.elasticOut,
+                    builder: (context, scale, child) {
+                      return Transform.scale(
+                        scale: scale,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 150, vertical: 100),
+                          decoration: BoxDecoration(
+                            color: state.popupColor, // Warna disesuaikan dari Operator
+                            borderRadius: BorderRadius.circular(50), 
+                            border: Border.all(color: Colors.white, width: 10), 
+                            boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.4), blurRadius: 150, spreadRadius: 50)]
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: 50, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 10, shadows: [Shadow(color: Colors.black87, blurRadius: 20)])),
+                              const SizedBox(height: 40),
+                              Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'Courier', fontSize: 180, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black, offset: Offset(4, 4), blurRadius: 20)])),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
+            ),
+        ],
+      ),
+    );
 
-              // POPUP ANIMASI ZOOM IN PEMENANG (WARNA BISA DIKUSTOMISASI)
-              if (state.finalWinner != null)
-                Positioned.fill(
-                  child: Container(
-                    color: Colors.black.withOpacity(0.9),
-                    child: Center(
-                      child: TweenAnimationBuilder<double>(
-                        tween: Tween<double>(begin: 0.1, end: 1.0),
-                        duration: const Duration(milliseconds: 800),
-                        curve: Curves.elasticOut,
-                        builder: (context, scale, child) {
-                          return Transform.scale(
-                            scale: scale,
-                            child: Container(
-                              padding: EdgeInsets.symmetric(horizontal: isPreview ? 40 : 100, vertical: isPreview ? 30 : 60),
-                              decoration: BoxDecoration(
-                                color: state.popupColor, // Warna diatur dari Operator
-                                borderRadius: BorderRadius.circular(isPreview ? 15 : 30), 
-                                border: Border.all(color: Colors.white, width: isPreview ? 3 : 8), 
-                                boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.4), blurRadius: 100, spreadRadius: 30)]
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  // Teks dibuat Putih dengan Shadow Hitam agar selalu terbaca jelas
-                                  Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: isPreview ? 16 : 30, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 5, shadows: const [Shadow(color: Colors.black87, blurRadius: 10)])),
-                                  SizedBox(height: isPreview ? 10 : 20),
-                                  Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Courier', fontSize: isPreview ? 45 : 120, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black, offset: Offset(2, 2), blurRadius: 10)])),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-            ],
+    // KUNCI RASIO 16:9 DENGAN FITTEDBOX & LETTERBOX
+    return Container(
+      color: Colors.black, // Memberikan garis hitam otomatis jika proyektor bukan 16:9
+      child: Center(
+        child: AspectRatio(
+          aspectRatio: 16 / 9,
+          child: FittedBox(
+            fit: BoxFit.contain, // Memaksa canvas 1920x1080 di-zoom sesuai layar
+            child: canvas,
           ),
         ),
       ),
