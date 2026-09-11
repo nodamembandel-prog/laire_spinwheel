@@ -35,13 +35,11 @@ class AppState extends ChangeNotifier {
   final StreamController<int> spinController = StreamController<int>.broadcast();
   final AudioPlayer audioPlayer = AudioPlayer();
 
-  // Socket untuk komunikasi antar 2 Window
   ServerSocket? _serverSocket;
-  List<Socket> _clients = [];
+  final List<Socket> _clients = [];
   Socket? _clientSocket;
   String _socketBuffer = '';
 
-  // 1. SET MODE (OPERATOR ATAU DISPLAY)
   void setMode(AppMode mode) {
     currentMode = mode;
     notifyListeners();
@@ -52,15 +50,13 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // ================= LOGIKA SERVER (OPERATOR) =================
+  // ================= SERVER (OPERATOR) =================
   void _startServer() async {
     try {
       _serverSocket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 8765);
-      debugPrint("Server Operator Berjalan...");
       _serverSocket!.listen((Socket client) {
         _clients.add(client);
-        _broadcastState(); // Kirim data awal ke display saat dia baru connect
-        
+        _broadcastState(); 
         client.listen((data) {}, onDone: () => _clients.remove(client));
       });
     } catch (e) {
@@ -78,29 +74,22 @@ class AppState extends ChangeNotifier {
       'bgImage': backgroundImagePath,
     };
     final jsonStr = jsonEncode(stateData) + '\n';
-    for (var c in _clients) {
-      c.write(jsonStr);
-    }
+    for (var c in _clients) c.write(jsonStr);
   }
 
   void _broadcastSpin(int index) {
     if (_clients.isEmpty) return;
-    final stateData = {'type': 'spin', 'index': index};
-    final jsonStr = jsonEncode(stateData) + '\n';
-    for (var c in _clients) {
-      c.write(jsonStr);
-    }
+    final jsonStr = jsonEncode({'type': 'spin', 'index': index}) + '\n';
+    for (var c in _clients) c.write(jsonStr);
   }
 
   void _broadcastClearWinner() {
     if (_clients.isEmpty) return;
     final jsonStr = jsonEncode({'type': 'clear_winner'}) + '\n';
-    for (var c in _clients) {
-      c.write(jsonStr);
-    }
+    for (var c in _clients) c.write(jsonStr);
   }
 
-  // ================= LOGIKA CLIENT (DISPLAY) =================
+  // ================= CLIENT (DISPLAY) =================
   void _connectToServer() async {
     try {
       _clientSocket = await Socket.connect(InternetAddress.loopbackIPv4, 8765);
@@ -113,7 +102,6 @@ class AppState extends ChangeNotifier {
           if (line.trim().isNotEmpty) _processCommand(line);
         }
       }, onDone: () {
-        // Coba reconnect jika operator ditutup lalu dibuka lagi
         Future.delayed(const Duration(seconds: 2), _connectToServer);
       });
     } catch (e) {
@@ -131,7 +119,7 @@ class AppState extends ChangeNotifier {
         backgroundImagePath = decoded['bgImage'];
         notifyListeners();
       } else if (decoded['type'] == 'spin') {
-        _triggerDisplaySpin(decoded['index']);
+        _triggerSpin(decoded['index']);
       } else if (decoded['type'] == 'clear_winner') {
         winnerName = null;
         notifyListeners();
@@ -141,7 +129,7 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // ================= AKSI OPERATOR =================
+  // ================= AKSI KONTROL =================
   void addParticipant(String name) {
     if (name.trim().isNotEmpty) {
       participants.add(name.trim());
@@ -188,23 +176,13 @@ class AppState extends ChangeNotifier {
 
   void spin() {
     if (isSpinning || participants.length < 2) return;
-    
-    isSpinning = true;
-    winnerName = null;
-    notifyListeners();
-    
     int winningIndex = Random().nextInt(participants.length);
-    _broadcastSpin(winningIndex);
-    
-    // Matikan tombol sementara agar tidak dobel klik
-    Future.delayed(const Duration(seconds: 6), () {
-      isSpinning = false;
-      notifyListeners();
-    });
+    _broadcastSpin(winningIndex); // Kirim ke Layar 2
+    _triggerSpin(winningIndex);   // Mainkan di Live Preview Operator
   }
 
-  // ================= AKSI DISPLAY =================
-  Future<void> _triggerDisplaySpin(int index) async {
+  Future<void> _triggerSpin(int index) async {
+    isSpinning = true;
     winnerName = null;
     notifyListeners();
     
@@ -216,9 +194,9 @@ class AppState extends ChangeNotifier {
     
     spinController.add(index);
     
-    // Tampilkan pemenang setelah 5 detik (waktu putaran selesai)
     Future.delayed(const Duration(seconds: 5), () {
       winnerName = participants[index];
+      isSpinning = false;
       notifyListeners();
     });
   }
@@ -235,20 +213,16 @@ class LaireSpinwheelApp extends StatelessWidget {
       theme: ThemeData(brightness: Brightness.dark, fontFamily: 'Segoe UI'),
       home: Consumer<AppState>(
         builder: (context, state, child) {
-          if (state.currentMode == AppMode.selection) {
-            return const ModeSelectionScreen();
-          } else if (state.currentMode == AppMode.operator) {
-            return const OperatorScreen();
-          } else {
-            return const DisplayScreen();
-          }
+          if (state.currentMode == AppMode.selection) return const ModeSelectionScreen();
+          if (state.currentMode == AppMode.operator) return const OperatorScreen();
+          return const Scaffold(body: SpinwheelView(isPreview: false));
         },
       ),
     );
   }
 }
 
-// ================= 1. LAYAR PEMILIHAN MODE =================
+// ================= LAYAR PEMILIHAN MODE =================
 class ModeSelectionScreen extends StatelessWidget {
   const ModeSelectionScreen({Key? key}) : super(key: key);
 
@@ -268,27 +242,16 @@ class ModeSelectionScreen extends StatelessWidget {
             ElevatedButton.icon(
               icon: const Icon(Icons.settings, size: 28),
               label: const Text("BUKA SEBAGAI MENU OPERATOR", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orangeAccent,
-                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)),
               onPressed: () => state.setMode(AppMode.operator),
             ),
             const SizedBox(height: 20),
             OutlinedButton.icon(
               icon: const Icon(Icons.monitor, size: 28),
               label: const Text("BUKA SEBAGAI LAYAR DISPLAY", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
-                side: const BorderSide(color: Colors.orangeAccent, width: 2),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
-              ),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20), side: const BorderSide(color: Colors.orangeAccent, width: 2)),
               onPressed: () => state.setMode(AppMode.display),
             ),
-            const SizedBox(height: 20),
-            const Text("Tips: Buka aplikasi ini 2 kali. Satu untuk operator, satu geser ke proyektor.", style: TextStyle(color: Colors.white54)),
           ],
         ),
       ),
@@ -296,7 +259,7 @@ class ModeSelectionScreen extends StatelessWidget {
   }
 }
 
-// ================= 2. LAYAR MENU OPERATOR =================
+// ================= LAYAR MENU OPERATOR (3 KOLOM) =================
 class OperatorScreen extends StatelessWidget {
   const OperatorScreen({Key? key}) : super(key: key);
 
@@ -310,100 +273,137 @@ class OperatorScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('LAIRE STUDIO - KONTROL OPERATOR', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
         backgroundColor: Colors.black,
+        actions: [
+          Center(child: Padding(padding: const EdgeInsets.only(right: 20), child: Text(state.isSpinning ? "🔴 LIVE: BERPUTAR" : "🟢 STANDBY", style: TextStyle(color: state.isSpinning ? Colors.red : Colors.green, fontWeight: FontWeight.bold, fontSize: 16)))),
+        ],
       ),
       body: Row(
         children: [
-          // PANEL KIRI: Pengaturan Visual & Tombol Putar
+          // KOLOM 1: PENGATURAN VISUAL
           Expanded(
             flex: 1,
             child: Container(
-              padding: const EdgeInsets.all(24.0),
+              padding: const EdgeInsets.all(20),
               decoration: const BoxDecoration(border: Border(right: BorderSide(color: Colors.white12))),
               child: ListView(
                 children: [
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.play_arrow, size: 30),
-                    label: Text(state.isSpinning ? 'SEDANG BERPUTAR...' : 'PUTAR RODA (Spasi)', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: state.isSpinning ? Colors.grey : Colors.green,
-                      padding: const EdgeInsets.symmetric(vertical: 20),
-                    ),
-                    onPressed: state.isSpinning ? null : () => state.spin(),
-                  ),
+                  const Text("KUSTOMISASI VISUAL", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                  const Divider(),
+                  const SizedBox(height: 10),
+                  TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Judul Undian', border: OutlineInputBorder()), onSubmitted: (val) => state.updateTitle(val)),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(icon: const Icon(Icons.color_lens), label: const Text('Ubah Warna Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => _showColorPicker(context, state)),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(icon: const Icon(Icons.image), label: const Text('Ganti Gambar Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => state.pickBackgroundImage()),
+                  const SizedBox(height: 40),
+                  const Text("KONTROL LAYAR", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                  const Divider(),
                   const SizedBox(height: 10),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.close),
-                    label: const Text('Tutup Popup Pemenang (ESC)'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                    label: const Text('Tutup Pemenang (ESC)'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.all(16)),
                     onPressed: () => state.clearWinner(),
-                  ),
-                  const SizedBox(height: 40),
-                  const Text("KUSTOMISASI VISUAL", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-                  const Divider(),
-                  TextField(
-                    controller: titleController,
-                    decoration: const InputDecoration(labelText: 'Judul Undian'),
-                    onSubmitted: (val) => state.updateTitle(val),
-                  ),
-                  const SizedBox(height: 20),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.color_lens),
-                    label: const Text('Ubah Warna Latar'),
-                    onPressed: () => _showColorPicker(context, state),
-                  ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.image),
-                    label: const Text('Ganti Gambar Latar'),
-                    onPressed: () => state.pickBackgroundImage(),
                   ),
                 ],
               ),
             ),
           ),
-          // PANEL KANAN: Daftar Peserta
+          
+          // KOLOM 2: LIVE PREVIEW & TOMBOL PUTAR
           Expanded(
-            flex: 1,
-            child: Padding(
-              padding: const EdgeInsets.all(24.0),
+            flex: 2,
+            child: Container(
+              color: Colors.black87,
+              padding: const EdgeInsets.all(20),
               child: Column(
                 children: [
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.monitor, color: Colors.white54, size: 18),
+                      SizedBox(width: 8),
+                      Text("LIVE PREVIEW", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.white54)),
+                    ],
+                  ),
+                  const SizedBox(height: 15),
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white24, width: 2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: const SpinwheelView(isPreview: true),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 60,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.play_arrow, size: 30),
+                      label: Text(state.isSpinning ? 'SEDANG BERPUTAR...' : 'PUTAR RODA SEKARANG', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: state.isSpinning ? Colors.grey : Colors.green,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: state.isSpinning ? null : () => state.spin(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // KOLOM 3: DAFTAR PESERTA
+          Expanded(
+            flex: 1,
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white12))),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("DAFTAR PESERTA", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                      Text("Total: ${state.participants.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(),
+                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
                           controller: nameController,
-                          decoration: const InputDecoration(hintText: 'Tambah peserta...', border: OutlineInputBorder()),
-                          onSubmitted: (val) {
-                            state.addParticipant(val);
-                            nameController.clear();
-                          },
+                          decoration: const InputDecoration(hintText: 'Nama...', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10)),
+                          onSubmitted: (val) { state.addParticipant(val); nameController.clear(); },
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
                       ElevatedButton(
-                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(18), backgroundColor: Colors.orangeAccent),
-                        onPressed: () {
-                          state.addParticipant(nameController.text);
-                          nameController.clear();
-                        },
+                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(14), backgroundColor: Colors.orangeAccent),
+                        onPressed: () { state.addParticipant(nameController.text); nameController.clear(); },
                         child: const Icon(Icons.add),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 15),
                   Expanded(
                     child: ListView.builder(
                       itemCount: state.participants.length,
                       itemBuilder: (context, index) {
                         return Card(
                           color: Colors.white10,
+                          margin: const EdgeInsets.only(bottom: 8),
                           child: ListTile(
+                            dense: true,
                             title: Text(state.participants[index]),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.redAccent),
-                              onPressed: () => state.removeParticipant(index),
-                            ),
+                            trailing: IconButton(icon: const Icon(Icons.close, color: Colors.redAccent, size: 20), onPressed: () => state.removeParticipant(index)),
                           ),
                         );
                       },
@@ -423,18 +423,17 @@ class OperatorScreen extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Pilih Warna'),
-        content: SingleChildScrollView(
-          child: ColorPicker(pickerColor: state.backgroundColor, onColorChanged: (color) => state.updateBackgroundColor(color)),
-        ),
+        content: SingleChildScrollView(child: ColorPicker(pickerColor: state.backgroundColor, onColorChanged: (color) => state.updateBackgroundColor(color))),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Selesai'))],
       ),
     );
   }
 }
 
-// ================= 3. LAYAR DISPLAY (FULLSCREEN PROYEKTOR) =================
-class DisplayScreen extends StatelessWidget {
-  const DisplayScreen({Key? key}) : super(key: key);
+// ================= KOMPONEN RODA (Bisa dipakai di Display & Preview) =================
+class SpinwheelView extends StatelessWidget {
+  final bool isPreview;
+  const SpinwheelView({Key? key, required this.isPreview}) : super(key: key);
 
   final List<Color> wheelColors = const [
     Color(0xFFE63946), Color(0xFF457B9D), Color(0xFF2A9D8F),
@@ -445,95 +444,93 @@ class DisplayScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
-    return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: BoxDecoration(
-          color: state.backgroundColor,
-          image: state.backgroundImagePath != null ? DecorationImage(image: FileImage(File(state.backgroundImagePath!)), fit: BoxFit.cover) : null,
-        ),
-        child: Stack(
-          children: [
-            // Roda dan Judul
-            Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    state.wheelTitle,
-                    style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 4.0, shadows: [Shadow(color: Colors.black87, blurRadius: 10, offset: Offset(0, 4))]),
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      decoration: BoxDecoration(
+        color: state.backgroundColor,
+        image: state.backgroundImagePath != null ? DecorationImage(image: FileImage(File(state.backgroundImagePath!)), fit: BoxFit.cover) : null,
+      ),
+      child: Stack(
+        children: [
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  state.wheelTitle,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isPreview ? 24 : 48, 
+                    fontWeight: FontWeight.w900, 
+                    color: Colors.white, 
+                    letterSpacing: isPreview ? 2.0 : 4.0, 
+                    shadows: const [Shadow(color: Colors.black87, blurRadius: 10, offset: Offset(0, 4))]
                   ),
-                  const SizedBox(height: 50),
-                  SizedBox(
-                    height: 600, width: 600,
-                    child: FortuneWheel(
-                      selected: state.spinController.stream,
-                      animateFirst: false,
-                      physics: CircularPanPhysics(duration: const Duration(seconds: 5), curve: Curves.decelerate),
-                      items: [
-                        for (int i = 0; i < state.participants.length; i++)
-                          FortuneItem(
-                            child: Text(state.participants[i], style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
-                            style: FortuneItemStyle(color: wheelColors[i % wheelColors.length], borderColor: Colors.white, borderWidth: 3),
-                          ),
-                      ],
-                    ),
+                ),
+                SizedBox(height: isPreview ? 20 : 50),
+                SizedBox(
+                  height: isPreview ? 300 : 600, 
+                  width: isPreview ? 300 : 600,
+                  child: FortuneWheel(
+                    selected: state.spinController.stream,
+                    animateFirst: false,
+                    physics: CircularPanPhysics(duration: const Duration(seconds: 5), curve: Curves.decelerate),
+                    items: [
+                      for (int i = 0; i < state.participants.length; i++)
+                        FortuneItem(
+                          child: Text(state.participants[i], style: TextStyle(fontSize: isPreview ? 14 : 26, fontWeight: FontWeight.bold, color: Colors.white)),
+                          style: FortuneItemStyle(color: wheelColors[i % wheelColors.length], borderColor: Colors.white, borderWidth: isPreview ? 1 : 3),
+                        ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-
-            // Logo Laire (Kecil di bawah tengah)
-            Positioned(
-              bottom: 20, left: 0, right: 0,
-              child: Center(
-                child: Image.asset('assets/Preview-4.png', height: 40, errorBuilder: (_,__,___) => const SizedBox()),
-              ),
-            ),
-
-            // Animasi Pemenang Meledak (Zoom In)
-            if (state.winnerName != null)
-              Positioned.fill(
-                child: Container(
-                  color: Colors.black.withOpacity(0.8),
-                  child: Center(
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween<double>(begin: 0.1, end: 1.0),
-                      duration: const Duration(milliseconds: 1000),
-                      curve: Curves.elasticOut,
-                      builder: (context, scale, child) {
-                        return Transform.scale(
-                          scale: scale,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 80, vertical: 50),
-                            decoration: BoxDecoration(
-                              color: Colors.orangeAccent,
-                              borderRadius: BorderRadius.circular(30),
-                              boxShadow: [BoxShadow(color: Colors.orange.withOpacity(0.5), blurRadius: 100, spreadRadius: 20)],
-                              border: Border.all(color: Colors.white, width: 5),
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text("SELAMAT KEPADA", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white70, letterSpacing: 5)),
-                                const SizedBox(height: 10),
-                                Text(
-                                  state.winnerName!.toUpperCase(),
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(fontSize: 90, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black54, offset: Offset(2, 4), blurRadius: 4)]),
-                                ),
-                              ],
-                            ),
+          ),
+          Positioned(
+            bottom: isPreview ? 10 : 20, left: 0, right: 0,
+            child: Center(child: Image.asset('assets/Preview-4.png', height: isPreview ? 25 : 40, errorBuilder: (_,__,___) => const SizedBox())),
+          ),
+          if (state.winnerName != null)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black.withOpacity(0.8),
+                child: Center(
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween<double>(begin: 0.1, end: 1.0),
+                    duration: const Duration(milliseconds: 1000),
+                    curve: Curves.elasticOut,
+                    builder: (context, scale, child) {
+                      return Transform.scale(
+                        scale: scale,
+                        child: Container(
+                          padding: EdgeInsets.symmetric(horizontal: isPreview ? 30 : 80, vertical: isPreview ? 20 : 50),
+                          decoration: BoxDecoration(
+                            color: Colors.orangeAccent,
+                            borderRadius: BorderRadius.circular(isPreview ? 15 : 30),
+                            border: Border.all(color: Colors.white, width: isPreview ? 2 : 5),
                           ),
-                        );
-                      },
-                    ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text("SELAMAT KEPADA", style: TextStyle(fontSize: isPreview ? 12 : 24, fontWeight: FontWeight.bold, color: Colors.white70)),
+                              SizedBox(height: isPreview ? 5 : 10),
+                              Text(
+                                state.winnerName!.toUpperCase(),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: isPreview ? 40 : 90, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black54, offset: Offset(2, 4), blurRadius: 4)]),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
