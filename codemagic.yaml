@@ -1,0 +1,27 @@
+workflows:
+  build-laire-spinwheel:
+    name: Build Multiplatform Laire Spinwheel
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: Enable Desktop Support
+        script: |
+          flutter config --enable-windows-desktop
+          flutter config --enable-macos-desktop
+      - name: Install Dependencies
+        script: |
+          flutter pub get
+      - name: Build Android APK
+        script: |
+          flutter build apk --release
+      - name: Build Windows EXE
+        script: |
+          flutter build windows --release
+      - name: Build macOS App
+        script: |
+          flutter build macos --release
+    artifacts:
+      - build/app/outputs/flutter-apk/app-release.apk
+      - build/windows/runner/Release/*.exe
+      - build/macos/Build/Products/Release/*.app
