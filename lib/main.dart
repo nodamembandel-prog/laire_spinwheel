@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
@@ -33,6 +34,7 @@ void main() async {
 }
 
 enum AppMode { selection, operator, display }
+enum ColorTarget { background, box, popup } // Target kustomisasi warna
 
 class WinnerData {
   String name;
@@ -50,7 +52,9 @@ class AppState extends ChangeNotifier {
   
   String eventTitle = "LAIRE GRAND PRIZE";
   Color backgroundColor = const Color(0xFF0F172A); 
-  Color boxColor = const Color(0xAA000000); // Hitam semi-transparan (default)
+  Color boxColor = const Color(0xAA000000); 
+  Color popupColor = const Color(0xFFD4AF37); // Warna Default Popup Pemenang (Emas)
+  
   String? backgroundBase64;
   bool showWinnerList = false; 
   
@@ -113,6 +117,7 @@ class AppState extends ChangeNotifier {
       'title': eventTitle,
       'bgColor': backgroundColor.value,
       'boxColor': boxColor.value,
+      'popupColor': popupColor.value,
       'bgBase64': backgroundBase64,
       'showWinnerList': showWinnerList,
     });
@@ -160,6 +165,7 @@ class AppState extends ChangeNotifier {
           eventTitle = decoded['title'];
           backgroundColor = Color(decoded['bgColor']);
           boxColor = Color(decoded['boxColor']);
+          popupColor = Color(decoded['popupColor'] ?? 0xFFD4AF37);
           backgroundBase64 = decoded['bgBase64'];
           showWinnerList = decoded['showWinnerList'];
           notifyListeners();
@@ -192,7 +198,7 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // ================= KONTROL =================
+  // ================= KONTROL WARNA & LAYAR =================
   void triggerRemoteFullscreen() {
     _broadcastCommand('force_fullscreen');
   }
@@ -218,6 +224,12 @@ class AppState extends ChangeNotifier {
 
   void updateBoxColor(Color color) {
     boxColor = color;
+    _broadcastConfig();
+    notifyListeners();
+  }
+
+  void updatePopupColor(Color color) {
+    popupColor = color;
     _broadcastConfig();
     notifyListeners();
   }
@@ -398,7 +410,7 @@ class OperatorScreen extends StatelessWidget {
                   ElevatedButton.icon(
                     icon: const Icon(Icons.fullscreen),
                     label: const Text('1-Klik Fullscreen (Layar 2)'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, padding: const EdgeInsets.all(15)),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, padding: const EdgeInsets.all(12)),
                     onPressed: () => state.triggerRemoteFullscreen(),
                   ),
                   const SizedBox(height: 10),
@@ -408,37 +420,43 @@ class OperatorScreen extends StatelessWidget {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: state.showWinnerList ? Colors.grey : Colors.orange,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.all(15)
+                      padding: const EdgeInsets.all(12)
                     ),
                     onPressed: () => state.toggleWinnerList(),
                   ),
-                  const SizedBox(height: 25),
+                  const SizedBox(height: 20),
 
                   const Text("KUSTOMISASI VISUAL", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
                   const Divider(),
                   TextField(decoration: const InputDecoration(labelText: 'Judul Event', border: OutlineInputBorder()), onSubmitted: (val) => state.updateTitle(val)),
                   const SizedBox(height: 15),
                   
-                  // TOMBOL GANTI WARNA - DIBUAT BESAR DAN JELAS
                   ElevatedButton.icon(
                     icon: const Icon(Icons.image), 
                     label: const Text('1. Ganti GAMBAR Latar'), 
-                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(15)),
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(12)),
                     onPressed: () => state.pickBackgroundImage()
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.format_color_fill), 
                     label: const Text('2. Ganti WARNA Latar'), 
-                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(15)),
-                    onPressed: () => _showColorPicker(context, state, true)
+                    style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(12)),
+                    onPressed: () => _showColorPicker(context, state, ColorTarget.background)
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.branding_watermark), 
                     label: const Text('3. Ganti WARNA Box Angka'), 
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.all(15)),
-                    onPressed: () => _showColorPicker(context, state, false)
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.all(12)),
+                    onPressed: () => _showColorPicker(context, state, ColorTarget.box)
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.star), 
+                    label: const Text('4. Ganti WARNA Popup Pemenang'), 
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, padding: const EdgeInsets.all(12)),
+                    onPressed: () => _showColorPicker(context, state, ColorTarget.popup)
                   ),
                   const SizedBox(height: 25),
 
@@ -575,31 +593,43 @@ class OperatorScreen extends StatelessWidget {
     );
   }
 
-  void _showColorPicker(BuildContext context, AppState state, bool isBackground) {
-    // Ambil warna saat ini agar tidak terset-ulang saat dialog terbuka
-    Color tempColor = isBackground ? state.backgroundColor : state.boxColor;
+  void _showColorPicker(BuildContext context, AppState state, ColorTarget target) {
+    Color tempColor;
+    String title;
+    
+    if (target == ColorTarget.background) {
+      tempColor = state.backgroundColor;
+      title = 'Pilih Warna Latar';
+    } else if (target == ColorTarget.box) {
+      tempColor = state.boxColor;
+      title = 'Pilih Warna Box Angka';
+    } else {
+      tempColor = state.popupColor;
+      title = 'Pilih Warna Popup Pemenang';
+    }
     
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(isBackground ? 'Pilih Warna Latar' : 'Pilih Warna Box Angka', style: const TextStyle(color: Colors.amber)),
+        title: Text(title, style: const TextStyle(color: Colors.amber)),
         content: SingleChildScrollView(
-          // StatefulBuilder memastikan warna langsung berubah saat slider digeser
           child: StatefulBuilder(
             builder: (context, setStateCb) {
               return ColorPicker(
                 pickerColor: tempColor, 
                 onColorChanged: (color) {
-                  setStateCb(() => tempColor = color); // Update tampilan slider
-                  if (isBackground) {
+                  setStateCb(() => tempColor = color);
+                  if (target == ColorTarget.background) {
                     state.updateBackgroundColor(color);
-                  } else {
+                  } else if (target == ColorTarget.box) {
                     state.updateBoxColor(color);
+                  } else {
+                    state.updatePopupColor(color);
                   }
                 },
-                enableAlpha: true, // Untuk Box tembus pandang
+                enableAlpha: true,
                 displayThumbColor: true,
-                hexInputBar: true, // Untuk input kode Hex langsung
+                hexInputBar: true,
                 portraitOnly: true,
               );
             },
@@ -626,6 +656,7 @@ class RaffleDisplayView extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
+    // Kunci Rasio 16:9 Absolut. Mengatasi perbedaan rasio laptop dan proyektor.
     return Center(
       child: AspectRatio(
         aspectRatio: 16 / 9,
@@ -648,15 +679,14 @@ class RaffleDisplayView extends StatelessWidget {
                     ),
                     SizedBox(height: isPreview ? 20 : 60),
                     
-                    // BOX RAFFLE
+                    // BOX RAFFLE (EFEK FLASH DAN GETAR DIHAPUS - TETAP TENANG)
                     Container(
                       width: isPreview ? 250 : 800,
                       height: isPreview ? 80 : 250,
                       decoration: BoxDecoration(
                         color: state.boxColor,
                         borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: state.isSpinning ? Colors.amber : Colors.white24, width: state.isSpinning ? 4 : 2),
-                        boxShadow: state.isSpinning ? [BoxShadow(color: Colors.amber.withOpacity(0.5), blurRadius: 30, spreadRadius: 5)] : [],
+                        border: Border.all(color: Colors.white24, width: 2), // Tetap statis, tidak berkedip
                       ),
                       alignment: Alignment.center,
                       child: Text(
@@ -668,7 +698,7 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
               ),
 
-              // OVERLAY DAFTAR PEMENANG
+              // OVERLAY DAFTAR PEMENANG 
               if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
                 Align(
                   alignment: Alignment.centerRight,
@@ -723,7 +753,7 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
               ),
 
-              // POPUP ANIMASI ZOOM IN PEMENANG
+              // POPUP ANIMASI ZOOM IN PEMENANG (WARNA BISA DIKUSTOMISASI)
               if (state.finalWinner != null)
                 Positioned.fill(
                   child: Container(
@@ -738,13 +768,19 @@ class RaffleDisplayView extends StatelessWidget {
                             scale: scale,
                             child: Container(
                               padding: EdgeInsets.symmetric(horizontal: isPreview ? 40 : 100, vertical: isPreview ? 30 : 60),
-                              decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFFD4AF37), Color(0xFFF3E5AB)]), borderRadius: BorderRadius.circular(isPreview ? 15 : 30), border: Border.all(color: Colors.white, width: isPreview ? 3 : 8), boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.4), blurRadius: 100, spreadRadius: 30)]),
+                              decoration: BoxDecoration(
+                                color: state.popupColor, // Warna diatur dari Operator
+                                borderRadius: BorderRadius.circular(isPreview ? 15 : 30), 
+                                border: Border.all(color: Colors.white, width: isPreview ? 3 : 8), 
+                                boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.4), blurRadius: 100, spreadRadius: 30)]
+                              ),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: isPreview ? 16 : 30, fontWeight: FontWeight.bold, color: Colors.black87, letterSpacing: 5)),
+                                  // Teks dibuat Putih dengan Shadow Hitam agar selalu terbaca jelas
+                                  Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: isPreview ? 16 : 30, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 5, shadows: const [Shadow(color: Colors.black87, blurRadius: 10)])),
                                   SizedBox(height: isPreview ? 10 : 20),
-                                  Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Courier', fontSize: isPreview ? 45 : 120, fontWeight: FontWeight.w900, color: Colors.black, shadows: const [Shadow(color: Colors.white, offset: Offset(2, 2), blurRadius: 0)])),
+                                  Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Courier', fontSize: isPreview ? 45 : 120, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black, offset: Offset(2, 2), blurRadius: 10)])),
                                 ],
                               ),
                             ),
