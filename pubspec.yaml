@@ -12,6 +12,21 @@ dependencies:
   audioplayers: ^6.1.1
   file_picker: ^8.0.0
   flutter_colorpicker: ^1.1.0
+  window_manager: ^0.4.3
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.1
+
+flutter_icons:
+  android: false
+  ios: false
+  image_path: "assets/Preview-4.png"
+  windows:
+    generate: true
+    image_path: "assets/Preview-4.png"
+  macos:
+    generate: true
+    image_path: "assets/Preview-4.png"
 
 flutter:
   uses-material-design: true
