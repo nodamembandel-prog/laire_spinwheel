@@ -53,9 +53,10 @@ class AppState extends ChangeNotifier {
   String eventTitle = "LAIRE GRAND PRIZE";
   Color backgroundColor = const Color(0xFF0F172A); 
   Color boxColor = const Color(0xAA000000); 
-  Color popupColor = const Color(0xFFD4AF37); 
+  Color popupColor = const Color(0xFFD4AF37); // Warna Popup Pemenang
   
-  String? backgroundBase64;
+  String? backgroundBase64; // Untuk dikirim ke layar 2
+  Uint8List? backgroundBytes; // Caching memori agar tidak getar/lag
   bool showWinnerList = false; 
   
   bool isSpinning = false;
@@ -166,8 +167,15 @@ class AppState extends ChangeNotifier {
           backgroundColor = Color(decoded['bgColor']);
           boxColor = Color(decoded['boxColor']);
           popupColor = Color(decoded['popupColor'] ?? 0xFFD4AF37);
-          backgroundBase64 = decoded['bgBase64'];
           showWinnerList = decoded['showWinnerList'];
+          
+          // Mengubah Base64 ke memori fisik (Uint8List) 1 KALI SAJA agar tidak lag
+          backgroundBase64 = decoded['bgBase64'];
+          if (backgroundBase64 != null) {
+            backgroundBytes = base64Decode(backgroundBase64!);
+          } else {
+            backgroundBytes = null;
+          }
           notifyListeners();
           break;
         case 'sync_participants':
@@ -218,6 +226,7 @@ class AppState extends ChangeNotifier {
   void updateBackgroundColor(Color color) {
     backgroundColor = color;
     backgroundBase64 = null;
+    backgroundBytes = null;
     _broadcastConfig();
     notifyListeners();
   }
@@ -238,6 +247,7 @@ class AppState extends ChangeNotifier {
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
     if (result != null) {
       Uint8List? fileBytes = result.files.single.bytes ?? await File(result.files.single.path!).readAsBytes();
+      backgroundBytes = fileBytes;
       backgroundBase64 = base64Encode(fileBytes);
       _broadcastConfig();
       notifyListeners();
@@ -657,14 +667,13 @@ class RaffleDisplayView extends StatelessWidget {
     final state = Provider.of<AppState>(context);
     
     // KANVAS VIRTUAL ABSOLUT (1920x1080)
-    // Trik ini menjamin 100% tata letak di preview laptop dan proyektor kembar identik
     Widget canvas = Container(
       width: 1920,
       height: 1080,
       decoration: BoxDecoration(
         color: state.backgroundColor,
-        image: state.backgroundBase64 != null 
-            ? DecorationImage(image: MemoryImage(base64Decode(state.backgroundBase64!)), fit: BoxFit.cover) 
+        image: state.backgroundBytes != null 
+            ? DecorationImage(image: MemoryImage(state.backgroundBytes!), fit: BoxFit.cover) 
             : null,
       ),
       child: Stack(
@@ -687,7 +696,7 @@ class RaffleDisplayView extends StatelessWidget {
                 ),
                 const SizedBox(height: 80),
                 
-                // BOX RAFFLE
+                // BOX RAFFLE (BENTUK STATIS, TIDAK ADA KEDIPAN/GETAR)
                 Container(
                   width: 1200,
                   height: 350,
@@ -699,6 +708,8 @@ class RaffleDisplayView extends StatelessWidget {
                   alignment: Alignment.center,
                   child: Text(
                     state.rollingText ?? (state.participants.isEmpty ? "READY" : "STANDBY"),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontFamily: 'Courier', 
                         fontSize: 160, 
@@ -800,17 +811,17 @@ class RaffleDisplayView extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 150, vertical: 100),
                           decoration: BoxDecoration(
-                            color: state.popupColor, // Warna disesuaikan dari Operator
+                            color: state.popupColor, // Menggunakan warna dari Operator
                             borderRadius: BorderRadius.circular(50), 
                             border: Border.all(color: Colors.white, width: 10), 
-                            boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.4), blurRadius: 150, spreadRadius: 50)]
+                            boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.5), blurRadius: 150, spreadRadius: 50)]
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               const Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: 50, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 10, shadows: [Shadow(color: Colors.black87, blurRadius: 20)])),
                               const SizedBox(height: 40),
-                              Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'Courier', fontSize: 180, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black, offset: Offset(4, 4), blurRadius: 20)])),
+                              Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontFamily: 'Courier', fontSize: 180, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black87, offset: Offset(4, 4), blurRadius: 10)])),
                             ],
                           ),
                         ),
