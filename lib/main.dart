@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_fortune_wheel/flutter_fortune_wheel.dart';
@@ -24,12 +25,17 @@ enum AppMode { selection, operator, display }
 class AppState extends ChangeNotifier {
   AppMode currentMode = AppMode.selection;
   
-  List<String> participants = ['Peserta 1', 'Peserta 2', 'Peserta 3', 'Peserta 4'];
+  List<String> participants = ['Peserta 1', 'Peserta 2', 'Peserta 3', 'Peserta 4', 'Peserta 5', 'Peserta 6'];
+  List<String> winners = []; // Daftar Pemenang
+  
   String wheelTitle = "LAIRE CREATIVE UNDIAN";
   Color backgroundColor = const Color(0xFF0F172A);
-  String? backgroundImagePath;
+  
+  // Menggunakan Base64 agar tembus keamanan Sandbox macOS
+  String? backgroundBase64;
   
   bool isSpinning = false;
+  bool showWinnerList = true; // Toggle panel pemenang
   String? winnerName;
   
   final StreamController<int> spinController = StreamController<int>.broadcast();
@@ -70,8 +76,10 @@ class AppState extends ChangeNotifier {
       'type': 'sync',
       'title': wheelTitle,
       'participants': participants,
+      'winners': winners,
+      'showWinnerList': showWinnerList,
       'bgColor': backgroundColor.value,
-      'bgImage': backgroundImagePath,
+      'bgBase64': backgroundBase64,
     };
     final jsonStr = jsonEncode(stateData) + '\n';
     for (var c in _clients) c.write(jsonStr);
@@ -83,9 +91,9 @@ class AppState extends ChangeNotifier {
     for (var c in _clients) c.write(jsonStr);
   }
 
-  void _broadcastClearWinner() {
+  void _broadcastClearPopup() {
     if (_clients.isEmpty) return;
-    final jsonStr = jsonEncode({'type': 'clear_winner'}) + '\n';
+    final jsonStr = jsonEncode({'type': 'clear_popup'}) + '\n';
     for (var c in _clients) c.write(jsonStr);
   }
 
@@ -115,12 +123,14 @@ class AppState extends ChangeNotifier {
       if (decoded['type'] == 'sync') {
         wheelTitle = decoded['title'];
         participants = List<String>.from(decoded['participants']);
+        winners = List<String>.from(decoded['winners']);
+        showWinnerList = decoded['showWinnerList'];
         backgroundColor = Color(decoded['bgColor']);
-        backgroundImagePath = decoded['bgImage'];
+        backgroundBase64 = decoded['bgBase64'];
         notifyListeners();
       } else if (decoded['type'] == 'spin') {
         _triggerSpin(decoded['index']);
-      } else if (decoded['type'] == 'clear_winner') {
+      } else if (decoded['type'] == 'clear_popup') {
         winnerName = null;
         notifyListeners();
       }
@@ -139,11 +149,23 @@ class AppState extends ChangeNotifier {
   }
 
   void removeParticipant(int index) {
-    if (participants.length > 2) {
+    if (participants.isNotEmpty) {
       participants.removeAt(index);
       _broadcastState();
       notifyListeners();
     }
+  }
+
+  void clearAllWinners() {
+    winners.clear();
+    _broadcastState();
+    notifyListeners();
+  }
+
+  void toggleWinnerList() {
+    showWinnerList = !showWinnerList;
+    _broadcastState();
+    notifyListeners();
   }
 
   void updateTitle(String newTitle) {
@@ -154,31 +176,39 @@ class AppState extends ChangeNotifier {
 
   void updateBackgroundColor(Color color) {
     backgroundColor = color;
-    backgroundImagePath = null;
+    backgroundBase64 = null; // Reset gambar jika warna dipilih
     _broadcastState();
     notifyListeners();
   }
 
   Future<void> pickBackgroundImage() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
+    // Membaca file sebagai bytes agar bisa di-encode ke Base64 (Tembus Sandbox)
+    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
     if (result != null) {
-      backgroundImagePath = result.files.single.path;
-      _broadcastState();
-      notifyListeners();
+      Uint8List? fileBytes = result.files.single.bytes;
+      if (fileBytes == null && result.files.single.path != null) {
+        fileBytes = await File(result.files.single.path!).readAsBytes();
+      }
+      
+      if (fileBytes != null) {
+        backgroundBase64 = base64Encode(fileBytes);
+        _broadcastState();
+        notifyListeners();
+      }
     }
   }
 
-  void clearWinner() {
+  void clearPopup() {
     winnerName = null;
-    _broadcastClearWinner();
+    _broadcastClearPopup();
     notifyListeners();
   }
 
   void spin() {
-    if (isSpinning || participants.length < 2) return;
+    if (isSpinning || participants.isEmpty) return;
     int winningIndex = Random().nextInt(participants.length);
-    _broadcastSpin(winningIndex); // Kirim ke Layar 2
-    _triggerSpin(winningIndex);   // Mainkan di Live Preview Operator
+    _broadcastSpin(winningIndex); 
+    _triggerSpin(winningIndex);   
   }
 
   Future<void> _triggerSpin(int index) async {
@@ -194,9 +224,20 @@ class AppState extends ChangeNotifier {
     
     spinController.add(index);
     
+    // Setelah putaran berhenti (5 detik)
     Future.delayed(const Duration(seconds: 5), () {
-      winnerName = participants[index];
+      if (participants.isNotEmpty && index < participants.length) {
+        String won = participants[index];
+        winnerName = won;
+        winners.add(won); // Masukkan ke daftar pemenang
+        participants.removeAt(index); // Hapus dari roda
+      }
       isSpinning = false;
+      
+      // Paksa sync ulang dari server agar list benar-benar sama
+      if (currentMode == AppMode.operator) {
+        _broadcastState();
+      }
       notifyListeners();
     });
   }
@@ -291,19 +332,27 @@ class OperatorScreen extends StatelessWidget {
                   const Divider(),
                   const SizedBox(height: 10),
                   TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Judul Undian', border: OutlineInputBorder()), onSubmitted: (val) => state.updateTitle(val)),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 15),
                   ElevatedButton.icon(icon: const Icon(Icons.color_lens), label: const Text('Ubah Warna Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => _showColorPicker(context, state)),
                   const SizedBox(height: 10),
                   ElevatedButton.icon(icon: const Icon(Icons.image), label: const Text('Ganti Gambar Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => state.pickBackgroundImage()),
                   const SizedBox(height: 40),
+                  
                   const Text("KONTROL LAYAR", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
                   const Divider(),
                   const SizedBox(height: 10),
+                  SwitchListTile(
+                    title: const Text("Tampilkan Box Pemenang"),
+                    activeColor: Colors.orangeAccent,
+                    value: state.showWinnerList,
+                    onChanged: (val) => state.toggleWinnerList(),
+                  ),
+                  const SizedBox(height: 10),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.close),
-                    label: const Text('Tutup Pemenang (ESC)'),
+                    label: const Text('Tutup Popup Pemenang (ESC)'),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.all(16)),
-                    onPressed: () => state.clearWinner(),
+                    onPressed: () => state.clearPopup(),
                   ),
                 ],
               ),
@@ -350,7 +399,7 @@ class OperatorScreen extends StatelessWidget {
                         backgroundColor: state.isSpinning ? Colors.grey : Colors.green,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
-                      onPressed: state.isSpinning ? null : () => state.spin(),
+                      onPressed: (state.isSpinning || state.participants.isEmpty) ? null : () => state.spin(),
                     ),
                   ),
                 ],
@@ -358,7 +407,7 @@ class OperatorScreen extends StatelessWidget {
             ),
           ),
 
-          // KOLOM 3: DAFTAR PESERTA
+          // KOLOM 3: DAFTAR PESERTA & PEMENANG
           Expanded(
             flex: 1,
             child: Container(
@@ -366,15 +415,15 @@ class OperatorScreen extends StatelessWidget {
               decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white12))),
               child: Column(
                 children: [
+                  // BAGIAN PESERTA
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("DAFTAR PESERTA", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                      const Text("PESERTA RODA", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
                       Text("Total: ${state.participants.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
                   const Divider(),
-                  const SizedBox(height: 10),
                   Row(
                     children: [
                       Expanded(
@@ -392,23 +441,56 @@ class OperatorScreen extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 15),
+                  const SizedBox(height: 10),
                   Expanded(
+                    flex: 3,
                     child: ListView.builder(
                       itemCount: state.participants.length,
                       itemBuilder: (context, index) {
                         return Card(
                           color: Colors.white10,
-                          margin: const EdgeInsets.only(bottom: 8),
+                          margin: const EdgeInsets.only(bottom: 5),
                           child: ListTile(
                             dense: true,
                             title: Text(state.participants[index]),
-                            trailing: IconButton(icon: const Icon(Icons.close, color: Colors.redAccent, size: 20), onPressed: () => state.removeParticipant(index)),
+                            trailing: IconButton(icon: const Icon(Icons.close, color: Colors.redAccent, size: 18), onPressed: () => state.removeParticipant(index)),
                           ),
                         );
                       },
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  
+                  // BAGIAN PEMENANG
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("TELAH MENANG", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                      Text("Total: ${state.winners.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(),
+                  Expanded(
+                    flex: 2,
+                    child: ListView.builder(
+                      itemCount: state.winners.length,
+                      itemBuilder: (context, index) {
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.emoji_events, color: Colors.amber, size: 18),
+                          title: Text(state.winners[index], style: const TextStyle(color: Colors.white70)),
+                        );
+                      },
+                    ),
+                  ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Colors.redAccent)),
+                      onPressed: () => state.clearAllWinners(),
+                      child: const Text("Reset Data Pemenang"),
+                    ),
+                  )
                 ],
               ),
             ),
@@ -430,7 +512,7 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= KOMPONEN RODA (Bisa dipakai di Display & Preview) =================
+// ================= KOMPONEN RODA & TAMPILAN DISPLAY =================
 class SpinwheelView extends StatelessWidget {
   final bool isPreview;
   const SpinwheelView({Key? key, required this.isPreview}) : super(key: key);
@@ -449,10 +531,13 @@ class SpinwheelView extends StatelessWidget {
       height: double.infinity,
       decoration: BoxDecoration(
         color: state.backgroundColor,
-        image: state.backgroundImagePath != null ? DecorationImage(image: FileImage(File(state.backgroundImagePath!)), fit: BoxFit.cover) : null,
+        image: state.backgroundBase64 != null 
+            ? DecorationImage(image: MemoryImage(base64Decode(state.backgroundBase64!)), fit: BoxFit.cover) 
+            : null,
       ),
       child: Stack(
         children: [
+          // RODA & JUDUL UTAMA
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -465,33 +550,109 @@ class SpinwheelView extends StatelessWidget {
                     fontWeight: FontWeight.w900, 
                     color: Colors.white, 
                     letterSpacing: isPreview ? 2.0 : 4.0, 
-                    shadows: const [Shadow(color: Colors.black87, blurRadius: 10, offset: Offset(0, 4))]
+                    shadows: const [Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 4))]
                   ),
                 ),
                 SizedBox(height: isPreview ? 20 : 50),
-                SizedBox(
-                  height: isPreview ? 300 : 600, 
-                  width: isPreview ? 300 : 600,
-                  child: FortuneWheel(
-                    selected: state.spinController.stream,
-                    animateFirst: false,
-                    physics: CircularPanPhysics(duration: const Duration(seconds: 5), curve: Curves.decelerate),
-                    items: [
-                      for (int i = 0; i < state.participants.length; i++)
-                        FortuneItem(
-                          child: Text(state.participants[i], style: TextStyle(fontSize: isPreview ? 14 : 26, fontWeight: FontWeight.bold, color: Colors.white)),
-                          style: FortuneItemStyle(color: wheelColors[i % wheelColors.length], borderColor: Colors.white, borderWidth: isPreview ? 1 : 3),
-                        ),
-                    ],
-                  ),
-                ),
+                if (state.participants.isNotEmpty)
+                  SizedBox(
+                    height: isPreview ? 300 : 600, 
+                    width: isPreview ? 300 : 600,
+                    child: FortuneWheel(
+                      selected: state.spinController.stream,
+                      animateFirst: false,
+                      physics: CircularPanPhysics(duration: const Duration(seconds: 5), curve: Curves.decelerate),
+                      items: [
+                        for (int i = 0; i < state.participants.length; i++)
+                          FortuneItem(
+                            child: Text(state.participants[i], style: TextStyle(fontSize: isPreview ? 14 : 26, fontWeight: FontWeight.bold, color: Colors.white)),
+                            style: FortuneItemStyle(color: wheelColors[i % wheelColors.length], borderColor: Colors.white, borderWidth: isPreview ? 1 : 3),
+                          ),
+                      ],
+                    ),
+                  )
+                else
+                  Text("Belum ada peserta", style: TextStyle(color: Colors.white54, fontSize: isPreview ? 16 : 30)),
               ],
             ),
           ),
+
+          // OVERLAY DAFTAR PEMENANG (KANAN)
+          if (state.showWinnerList && state.winners.isNotEmpty)
+            Positioned(
+              top: isPreview ? 20 : 50,
+              bottom: isPreview ? 80 : 150, // Hindari menabrak logo di bawah
+              right: isPreview ? 10 : 40,
+              child: Container(
+                width: isPreview ? 120 : 300,
+                padding: EdgeInsets.all(isPreview ? 10 : 25),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.orangeAccent, width: 2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.emoji_events, color: Colors.amber, size: isPreview ? 14 : 30),
+                        SizedBox(width: isPreview ? 5 : 10),
+                        Text("PEMENANG", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: isPreview ? 12 : 24)),
+                      ],
+                    ),
+                    const Divider(color: Colors.orangeAccent),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: state.winners.length,
+                        itemBuilder: (context, i) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: Text("${i + 1}. ${state.winners[i]}", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: isPreview ? 11 : 22)),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // LOGO DAN TEKS LAIRE CREATIVE STUDIO (BAWAH TENGAH SOLID PILL)
           Positioned(
-            bottom: isPreview ? 10 : 20, left: 0, right: 0,
-            child: Center(child: Image.asset('assets/Preview-4.png', height: isPreview ? 25 : 40, errorBuilder: (_,__,___) => const SizedBox())),
+            bottom: isPreview ? 10 : 30, 
+            left: 0, 
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: isPreview ? 15 : 30, vertical: isPreview ? 5 : 12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7), // Pill solid transparan hitam
+                  borderRadius: BorderRadius.circular(50), // Membentuk kapsul
+                  border: Border.all(color: Colors.white24, width: 1),
+                  boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset('assets/Preview-4.png', height: isPreview ? 20 : 40, errorBuilder: (_,__,___) => const SizedBox()),
+                    SizedBox(width: isPreview ? 8 : 15),
+                    Text(
+                      "LAIRE CREATIVE STUDIO",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: isPreview ? 1.5 : 3.0,
+                        fontSize: isPreview ? 10 : 20,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
+
+          // POPUP ANIMASI ZOOM IN PEMENANG
           if (state.winnerName != null)
             Positioned.fill(
               child: Container(
@@ -519,7 +680,7 @@ class SpinwheelView extends StatelessWidget {
                               Text(
                                 state.winnerName!.toUpperCase(),
                                 textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: isPreview ? 40 : 90, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black54, offset: Offset(2, 4), blurRadius: 4)]),
+                                style: TextStyle(fontSize: isPreview ? 35 : 90, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black54, offset: Offset(2, 4), blurRadius: 4)]),
                               ),
                             ],
                           ),
