@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5 # PERBAIKAN: Menggunakan versi Java terbaru (v5)
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -19,6 +19,15 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter create --platforms=android .
+      
+      # PERBAIKAN: Memaksa SDK 34 untuk kompatibilitas suara
+      - name: Update Android SDK Settings
+        run: |
+          sed -i 's/flutter.compileSdkVersion/34/g' android/app/build.gradle || true
+          sed -i 's/flutter.minSdkVersion/23/g' android/app/build.gradle || true
+          echo "flutter.compileSdkVersion=34" >> android/local.properties
+          echo "flutter.minSdkVersion=23" >> android/local.properties
+          
       - run: flutter pub get
       - run: flutter build apk --release
       - name: Upload APK
@@ -43,7 +52,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LaireSpinwheel-Windows
-          path: build\windows\runner\Release\*
+          # PERBAIKAN: Menambahkan folder x64 pada jalur pencarian EXE
+          path: build\windows\x64\runner\Release\*
 
   build-macos:
     name: Build macOS App
