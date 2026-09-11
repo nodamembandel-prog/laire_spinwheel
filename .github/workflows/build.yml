@@ -1,0 +1,61 @@
+name: Build Laire Spinwheel
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Memungkinkan Anda memicu build secara manual
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaireSpinwheel-Android
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-windows-desktop
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaireSpinwheel-Windows
+          path: build\windows\runner\Release\*
+
+  build-macos:
+    name: Build macOS App
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      - run: flutter config --enable-macos-desktop
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - name: Upload macOS App
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaireSpinwheel-macOS
+          path: build/macos/Build/Products/Release/*.app
