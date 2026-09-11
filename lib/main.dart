@@ -10,6 +10,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -56,6 +57,14 @@ class AppState extends ChangeNotifier {
   Color popupColor = const Color(0xFFD4AF37); 
   Color logoBgColor = const Color(0xFF000000); 
   
+  // Fitur 10 Pilihan Font Broadcast
+  String selectedFont = 'Oswald';
+  final List<String> availableFonts = [
+    'Oswald', 'Anton', 'Bebas Neue', 'Montserrat', 
+    'Righteous', 'Russo One', 'Orbitron', 'Black Ops One', 
+    'Courier Prime', 'Roboto Mono'
+  ];
+  
   String? backgroundBase64; 
   Uint8List? backgroundBytes; 
   bool showWinnerList = false; 
@@ -64,6 +73,7 @@ class AppState extends ChangeNotifier {
   String? finalWinner;
   
   final AudioPlayer spinAudioPlayer = AudioPlayer();
+  final AudioPlayer winAudioPlayer = AudioPlayer();
 
   ServerSocket? _serverSocket;
   final List<Socket> _clients = [];
@@ -124,6 +134,7 @@ class AppState extends ChangeNotifier {
       'logoBgColor': logoBgColor.value,
       'bgBase64': backgroundBase64,
       'showWinnerList': showWinnerList,
+      'selectedFont': selectedFont,
     });
   }
 
@@ -172,6 +183,7 @@ class AppState extends ChangeNotifier {
           popupColor = Color(decoded['popupColor'] ?? 0xFFD4AF37);
           logoBgColor = Color(decoded['logoBgColor'] ?? 0xFF000000); 
           showWinnerList = decoded['showWinnerList'];
+          selectedFont = decoded['selectedFont'] ?? 'Oswald';
           
           backgroundBase64 = decoded['bgBase64'];
           if (backgroundBase64 != null) {
@@ -214,7 +226,7 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // ================= KONTROL WARNA & LAYAR =================
+  // ================= KONTROL WARNA, FONT & LAYAR =================
   void triggerRemoteFullscreen() {
     _broadcastCommand('force_fullscreen');
   }
@@ -227,6 +239,12 @@ class AppState extends ChangeNotifier {
 
   void updateTitle(String newTitle) {
     eventTitle = newTitle;
+    _broadcastConfig();
+    notifyListeners();
+  }
+
+  void updateFont(String newFont) {
+    selectedFont = newFont;
     _broadcastConfig();
     notifyListeners();
   }
@@ -331,6 +349,8 @@ class AppState extends ChangeNotifier {
       notifyListeners();
 
       _broadcastCommand('stop_roll', {'winner': won});
+
+      try { winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
       
       Future.delayed(const Duration(milliseconds: 500), () {
         _broadcastParticipants();
@@ -345,6 +365,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     spinAudioPlayer.dispose();
+    winAudioPlayer.dispose();
     _audioSub?.cancel();
     _fallbackTimer?.cancel();
     super.dispose();
@@ -461,6 +482,31 @@ class OperatorScreen extends StatelessWidget {
                   TextField(decoration: const InputDecoration(labelText: 'Judul Event', border: OutlineInputBorder()), onSubmitted: (val) => state.updateTitle(val)),
                   const SizedBox(height: 15),
                   
+                  // FITUR PILIHAN 10 FONT BROADCAST
+                  const Text("Pilih Font Angka & Pemenang", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  const SizedBox(height: 5),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(color: Colors.black45, border: Border.all(color: Colors.white24), borderRadius: BorderRadius.circular(8)),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: state.selectedFont,
+                        dropdownColor: Colors.grey[900],
+                        items: state.availableFonts.map((String font) {
+                          return DropdownMenuItem<String>(
+                            value: font,
+                            child: Text(font, style: GoogleFonts.getFont(font)),
+                          );
+                        }).toList(),
+                        onChanged: (String? newFont) {
+                          if (newFont != null) state.updateFont(newFont);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+
                   ElevatedButton.icon(
                     icon: const Icon(Icons.image), 
                     label: const Text('1. Ganti GAMBAR Latar'), 
@@ -689,13 +735,14 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= ISOLASI WIDGET ANIMASI (ANTI-KEDIP) =================
+// ================= ISOLASI WIDGET ANIMASI (MENCEGAH KEDIP) =================
 class RollingTextWidget extends StatefulWidget {
   final bool isSpinning;
   final String? finalWinner;
   final List<String> participants;
   final bool isPreview;
   final Color boxColor;
+  final String selectedFont;
 
   const RollingTextWidget({
     Key? key,
@@ -704,6 +751,7 @@ class RollingTextWidget extends StatefulWidget {
     required this.participants,
     required this.isPreview,
     required this.boxColor,
+    required this.selectedFont,
   }) : super(key: key);
 
   @override
@@ -747,7 +795,7 @@ class _RollingTextWidgetState extends State<RollingTextWidget> {
 
   @override
   Widget build(BuildContext context) {
-    String displayText = "STANDBY";
+    String displayText = "DOORPRIZE"; // MENGGANTI STANDBY MENJADI DOORPRIZE
     if (widget.isSpinning) {
       displayText = _currentText;
     } else if (widget.finalWinner != null) {
@@ -757,11 +805,11 @@ class _RollingTextWidgetState extends State<RollingTextWidget> {
     }
 
     return Container(
-      width: widget.isPreview ? 250 : 1200,
-      height: widget.isPreview ? 80 : 350,
+      width: widget.isPreview ? 200 : 950, // KOTAK DIPERKECIL (sebelumnya 1200)
+      height: widget.isPreview ? 65 : 280, // TINGGI DIPERKECIL (sebelumnya 350)
       decoration: BoxDecoration(
         color: widget.boxColor,
-        borderRadius: BorderRadius.circular(widget.isPreview ? 20 : 40),
+        borderRadius: BorderRadius.circular(widget.isPreview ? 15 : 30),
         border: Border.all(color: Colors.white24, width: widget.isPreview ? 2 : 4),
       ),
       alignment: Alignment.center,
@@ -769,12 +817,12 @@ class _RollingTextWidgetState extends State<RollingTextWidget> {
         displayText,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontFamily: 'Courier', 
-          fontSize: widget.isPreview ? 35 : 160, 
+        style: GoogleFonts.getFont(
+          widget.selectedFont, // MENGGUNAKAN FONT DARI DROPDOWN
+          fontSize: widget.isPreview ? 30 : 130, // UKURAN TEXT DISESUAIKAN
           fontWeight: FontWeight.w900, 
           color: Colors.white, 
-          letterSpacing: widget.isPreview ? 5.0 : 10.0
+          letterSpacing: widget.isPreview ? 3.0 : 8.0
         ),
       ),
     );
@@ -826,6 +874,7 @@ class RaffleDisplayView extends StatelessWidget {
                   participants: state.participants,
                   isPreview: false,
                   boxColor: state.boxColor,
+                  selectedFont: state.selectedFont,
                 ),
               ],
             ),
@@ -903,11 +952,11 @@ class RaffleDisplayView extends StatelessWidget {
             ),
           ),
 
-          // POPUP ANIMASI ZOOM IN PEMENANG (BLOK HITAM DIHAPUS)
+          // POPUP PEMENANG
           if (state.finalWinner != null)
             Positioned.fill(
               child: Container(
-                color: Colors.black.withOpacity(0.4), // Blok Hitam Transparan Halus
+                color: Colors.black.withOpacity(0.4), 
                 child: Center(
                   child: TweenAnimationBuilder<double>(
                     tween: Tween<double>(begin: 0.8, end: 1.0),
@@ -929,7 +978,20 @@ class RaffleDisplayView extends StatelessWidget {
                             children: [
                               const Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: 50, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 10, shadows: [Shadow(color: Colors.black87, blurRadius: 10)])),
                               const SizedBox(height: 40),
-                              Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontFamily: 'Courier', fontSize: 180, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black87, offset: Offset(4, 4), blurRadius: 10)])),
+                              // FONT PEMENANG JUGA MENGIKUTI FONT DROPDOWN
+                              Text(
+                                state.finalWinner!.toUpperCase(), 
+                                textAlign: TextAlign.center, 
+                                maxLines: 1, 
+                                overflow: TextOverflow.ellipsis, 
+                                style: GoogleFonts.getFont(
+                                  state.selectedFont,
+                                  fontSize: 160, 
+                                  fontWeight: FontWeight.w900, 
+                                  color: Colors.white, 
+                                  shadows: const [Shadow(color: Colors.black87, offset: Offset(4, 4), blurRadius: 10)]
+                                )
+                              ),
                             ],
                           ),
                         ),
