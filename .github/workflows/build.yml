@@ -15,6 +15,10 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-windows-desktop
+      
+      # PERBAIKAN: Mengembalikan perintah untuk membuat folder Windows
+      - run: flutter create --platforms=windows .
+      
       - run: flutter pub get
       - name: Generate App Icon
         run: flutter pub run flutter_launcher_icons
@@ -34,6 +38,10 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter config --enable-macos-desktop
+      
+      # PERBAIKAN: Mengembalikan perintah untuk membuat folder macOS
+      - run: flutter create --platforms=macos .
+      
       - run: flutter pub get
       - name: Generate App Icon
         run: flutter pub run flutter_launcher_icons
