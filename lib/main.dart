@@ -5,7 +5,6 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_fortune_wheel/flutter_fortune_wheel.dart';
 import 'package:provider/provider.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
@@ -15,36 +14,43 @@ void main() {
   runApp(
     ChangeNotifierProvider(
       create: (context) => AppState(),
-      child: const LaireSpinwheelApp(),
+      child: const LaireRaffleApp(),
     ),
   );
 }
 
 enum AppMode { selection, operator, display }
 
+class WinnerData {
+  String name;
+  String status; // 'MENUNGGU', 'SAH', 'HANGUS'
+  WinnerData({required this.name, this.status = 'MENUNGGU'});
+  
+  Map<String, dynamic> toJson() => {'name': name, 'status': status};
+  factory WinnerData.fromJson(Map<String, dynamic> json) => WinnerData(name: json['name'], status: json['status']);
+}
+
 class AppState extends ChangeNotifier {
   AppMode currentMode = AppMode.selection;
   
-  List<String> participants = ['Peserta 1', 'Peserta 2', 'Peserta 3', 'Peserta 4', 'Peserta 5', 'Peserta 6'];
-  List<String> winners = []; // Daftar Pemenang
+  List<String> participants = [];
+  List<WinnerData> winners = [];
   
-  String wheelTitle = "LAIRE CREATIVE UNDIAN";
-  Color backgroundColor = const Color(0xFF0F172A);
-  
-  // Menggunakan Base64 agar tembus keamanan Sandbox macOS
+  String eventTitle = "LAIRE GRAND PRIZE";
+  Color backgroundColor = const Color(0xFF0F172A); // Dark navy blue broadcast style
   String? backgroundBase64;
   
   bool isSpinning = false;
-  bool showWinnerList = true; // Toggle panel pemenang
-  String? winnerName;
+  String? rollingText; // Teks yang bergulir cepat
+  String? finalWinner;
   
-  final StreamController<int> spinController = StreamController<int>.broadcast();
   final AudioPlayer audioPlayer = AudioPlayer();
 
   ServerSocket? _serverSocket;
   final List<Socket> _clients = [];
   Socket? _clientSocket;
   String _socketBuffer = '';
+  Timer? _rollTimer;
 
   void setMode(AppMode mode) {
     currentMode = mode;
@@ -54,6 +60,22 @@ class AppState extends ChangeNotifier {
     } else if (mode == AppMode.display) {
       _connectToServer();
     }
+  }
+
+  // ================= IMPORT SPREADSHEET =================
+  void importFromSpreadsheet(String text) {
+    // Pisahkan berdasarkan baris baru (enter)
+    List<String> rawLines = text.split('\n');
+    int addedCount = 0;
+    for (String line in rawLines) {
+      String cleanLine = line.trim();
+      if (cleanLine.isNotEmpty && !participants.contains(cleanLine)) {
+        participants.add(cleanLine);
+        addedCount++;
+      }
+    }
+    _broadcastState();
+    notifyListeners();
   }
 
   // ================= SERVER (OPERATOR) =================
@@ -74,10 +96,9 @@ class AppState extends ChangeNotifier {
     if (_clients.isEmpty) return;
     final stateData = {
       'type': 'sync',
-      'title': wheelTitle,
+      'title': eventTitle,
       'participants': participants,
-      'winners': winners,
-      'showWinnerList': showWinnerList,
+      'winners': winners.map((w) => w.toJson()).toList(),
       'bgColor': backgroundColor.value,
       'bgBase64': backgroundBase64,
     };
@@ -85,15 +106,11 @@ class AppState extends ChangeNotifier {
     for (var c in _clients) c.write(jsonStr);
   }
 
-  void _broadcastSpin(int index) {
+  void _broadcastCommand(String type, [Map<String, dynamic>? extra]) {
     if (_clients.isEmpty) return;
-    final jsonStr = jsonEncode({'type': 'spin', 'index': index}) + '\n';
-    for (var c in _clients) c.write(jsonStr);
-  }
-
-  void _broadcastClearPopup() {
-    if (_clients.isEmpty) return;
-    final jsonStr = jsonEncode({'type': 'clear_popup'}) + '\n';
+    final data = {'type': type};
+    if (extra != null) data.addAll(extra);
+    final jsonStr = jsonEncode(data) + '\n';
     for (var c in _clients) c.write(jsonStr);
   }
 
@@ -109,9 +126,7 @@ class AppState extends ChangeNotifier {
           _socketBuffer = _socketBuffer.substring(index + 1);
           if (line.trim().isNotEmpty) _processCommand(line);
         }
-      }, onDone: () {
-        Future.delayed(const Duration(seconds: 2), _connectToServer);
-      });
+      }, onDone: () => Future.delayed(const Duration(seconds: 2), _connectToServer));
     } catch (e) {
       Future.delayed(const Duration(seconds: 2), _connectToServer);
     }
@@ -120,76 +135,52 @@ class AppState extends ChangeNotifier {
   void _processCommand(String jsonStr) {
     try {
       final decoded = jsonDecode(jsonStr);
-      if (decoded['type'] == 'sync') {
-        wheelTitle = decoded['title'];
-        participants = List<String>.from(decoded['participants']);
-        winners = List<String>.from(decoded['winners']);
-        showWinnerList = decoded['showWinnerList'];
-        backgroundColor = Color(decoded['bgColor']);
-        backgroundBase64 = decoded['bgBase64'];
-        notifyListeners();
-      } else if (decoded['type'] == 'spin') {
-        _triggerSpin(decoded['index']);
-      } else if (decoded['type'] == 'clear_popup') {
-        winnerName = null;
-        notifyListeners();
+      switch (decoded['type']) {
+        case 'sync':
+          eventTitle = decoded['title'];
+          participants = List<String>.from(decoded['participants']);
+          winners = (decoded['winners'] as List).map((w) => WinnerData.fromJson(w)).toList();
+          backgroundColor = Color(decoded['bgColor']);
+          backgroundBase64 = decoded['bgBase64'];
+          notifyListeners();
+          break;
+        case 'start_roll':
+          _startRollingEffect();
+          break;
+        case 'stop_roll':
+          _stopRollingEffect(decoded['winner']);
+          break;
+        case 'clear_popup':
+          finalWinner = null;
+          notifyListeners();
+          break;
       }
     } catch (e) {
       debugPrint("Error parsing JSON: $e");
     }
   }
 
-  // ================= AKSI KONTROL =================
-  void addParticipant(String name) {
-    if (name.trim().isNotEmpty) {
-      participants.add(name.trim());
-      _broadcastState();
-      notifyListeners();
-    }
-  }
-
-  void removeParticipant(int index) {
-    if (participants.isNotEmpty) {
-      participants.removeAt(index);
-      _broadcastState();
-      notifyListeners();
-    }
-  }
-
-  void clearAllWinners() {
-    winners.clear();
-    _broadcastState();
-    notifyListeners();
-  }
-
-  void toggleWinnerList() {
-    showWinnerList = !showWinnerList;
-    _broadcastState();
-    notifyListeners();
-  }
-
+  // ================= KONTROL VISUAL & PESERTA =================
   void updateTitle(String newTitle) {
-    wheelTitle = newTitle;
+    eventTitle = newTitle;
     _broadcastState();
     notifyListeners();
   }
 
   void updateBackgroundColor(Color color) {
     backgroundColor = color;
-    backgroundBase64 = null; // Reset gambar jika warna dipilih
+    backgroundBase64 = null;
     _broadcastState();
     notifyListeners();
   }
 
   Future<void> pickBackgroundImage() async {
-    // Membaca file sebagai bytes agar bisa di-encode ke Base64 (Tembus Sandbox)
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
     if (result != null) {
       Uint8List? fileBytes = result.files.single.bytes;
       if (fileBytes == null && result.files.single.path != null) {
         fileBytes = await File(result.files.single.path!).readAsBytes();
       }
-      
       if (fileBytes != null) {
         backgroundBase64 = base64Encode(fileBytes);
         _broadcastState();
@@ -198,72 +189,106 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void clearPopup() {
-    winnerName = null;
-    _broadcastClearPopup();
+  void removeParticipant(int index) {
+    participants.removeAt(index);
+    _broadcastState();
+    notifyListeners();
+  }
+  
+  void clearParticipants() {
+    participants.clear();
+    _broadcastState();
     notifyListeners();
   }
 
-  void spin() {
+  // ================= KONTROL PEMENANG (SAH / HANGUS) =================
+  void setWinnerStatus(int index, String status) {
+    winners[index].status = status;
+    _broadcastState();
+    notifyListeners();
+  }
+
+  void clearWinnerPopup() {
+    finalWinner = null;
+    _broadcastCommand('clear_popup');
+    notifyListeners();
+  }
+
+  // ================= LOGIKA UNDIAN (RAFFLE) =================
+  void startRaffle() async {
     if (isSpinning || participants.isEmpty) return;
-    int winningIndex = Random().nextInt(participants.length);
-    _broadcastSpin(winningIndex); 
-    _triggerSpin(winningIndex);   
-  }
-
-  Future<void> _triggerSpin(int index) async {
-    isSpinning = true;
-    winnerName = null;
-    notifyListeners();
     
+    // Mulai animasi
+    _broadcastCommand('start_roll');
+    _startRollingEffect(); // Mulai di operator juga
+
     try {
       await audioPlayer.play(AssetSource('spin_sound.mp3'));
     } catch (e) {
       debugPrint("Suara tidak ditemukan");
     }
-    
-    spinController.add(index);
-    
-    // Setelah putaran berhenti (5 detik)
-    Future.delayed(const Duration(seconds: 5), () {
-      if (participants.isNotEmpty && index < participants.length) {
-        String won = participants[index];
-        winnerName = won;
-        winners.add(won); // Masukkan ke daftar pemenang
-        participants.removeAt(index); // Hapus dari roda
-      }
-      isSpinning = false;
+
+    // Tunggu 4 detik, lalu tentukan pemenang
+    Future.delayed(const Duration(seconds: 4), () {
+      int winningIndex = Random().nextInt(participants.length);
+      String won = participants[winningIndex];
       
-      // Paksa sync ulang dari server agar list benar-benar sama
-      if (currentMode == AppMode.operator) {
-        _broadcastState();
-      }
-      notifyListeners();
+      participants.removeAt(winningIndex);
+      winners.insert(0, WinnerData(name: won)); // Masukkan di paling atas
+      
+      _broadcastCommand('stop_roll', {'winner': won});
+      _stopRollingEffect(won);
+      
+      // Sinkronisasi data ke layar display
+      Future.delayed(const Duration(milliseconds: 500), _broadcastState);
     });
+  }
+
+  void _startRollingEffect() {
+    isSpinning = true;
+    finalWinner = null;
+    _rollTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (participants.isNotEmpty) {
+        rollingText = participants[Random().nextInt(participants.length)];
+        notifyListeners();
+      }
+    });
+  }
+
+  void _stopRollingEffect(String winner) {
+    _rollTimer?.cancel();
+    isSpinning = false;
+    rollingText = null;
+    finalWinner = winner;
+    notifyListeners();
   }
 }
 
-class LaireSpinwheelApp extends StatelessWidget {
-  const LaireSpinwheelApp({Key? key}) : super(key: key);
+class LaireRaffleApp extends StatelessWidget {
+  const LaireRaffleApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Laire Spinwheel',
+      title: 'Laire Broadcast Raffle',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(brightness: Brightness.dark, fontFamily: 'Segoe UI'),
+      theme: ThemeData(
+        brightness: Brightness.dark, 
+        fontFamily: 'Roboto', // Font broadcast yang tegas
+        scaffoldBackgroundColor: const Color(0xFF0F172A)
+      ),
       home: Consumer<AppState>(
         builder: (context, state, child) {
           if (state.currentMode == AppMode.selection) return const ModeSelectionScreen();
           if (state.currentMode == AppMode.operator) return const OperatorScreen();
-          return const Scaffold(body: SpinwheelView(isPreview: false));
+          return const Scaffold(body: RaffleDisplayView(isPreview: false));
         },
       ),
     );
   }
 }
 
-// ================= LAYAR PEMILIHAN MODE =================
+// ================= LAYAR PEMILIHAN =================
 class ModeSelectionScreen extends StatelessWidget {
   const ModeSelectionScreen({Key? key}) : super(key: key);
 
@@ -271,26 +296,38 @@ class ModeSelectionScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context, listen: false);
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.asset('assets/Preview-4.png', height: 120, errorBuilder: (_,__,___) => const SizedBox()),
-            const SizedBox(height: 50),
-            const Text("PILIH FUNGSI WINDOW INI", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
-            const SizedBox(height: 40),
+            // Logo Kapsul
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+              decoration: BoxDecoration(
+                color: Colors.black, borderRadius: BorderRadius.circular(50),
+                border: Border.all(color: Colors.amberAccent, width: 2),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Image.asset('assets/Preview-4.png', height: 40, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber)),
+                  const SizedBox(width: 15),
+                  const Text("LAIRE CREATIVE STUDIO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 3.0, fontSize: 18)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 60),
             ElevatedButton.icon(
               icon: const Icon(Icons.settings, size: 28),
-              label: const Text("BUKA SEBAGAI MENU OPERATOR", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)),
+              label: const Text("BUKA SEBAGAI OPERATOR", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)),
               onPressed: () => state.setMode(AppMode.operator),
             ),
             const SizedBox(height: 20),
             OutlinedButton.icon(
               icon: const Icon(Icons.monitor, size: 28),
-              label: const Text("BUKA SEBAGAI LAYAR DISPLAY", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              style: OutlinedButton.styleFrom(foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20), side: const BorderSide(color: Colors.orangeAccent, width: 2)),
+              label: const Text("BUKA SEBAGAI DISPLAY PROYEKTOR", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20), side: const BorderSide(color: Colors.amber, width: 2)),
               onPressed: () => state.setMode(AppMode.display),
             ),
           ],
@@ -300,66 +337,79 @@ class ModeSelectionScreen extends StatelessWidget {
   }
 }
 
-// ================= LAYAR MENU OPERATOR (3 KOLOM) =================
+// ================= LAYAR OPERATOR =================
 class OperatorScreen extends StatelessWidget {
   const OperatorScreen({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
-    final TextEditingController nameController = TextEditingController();
-    final TextEditingController titleController = TextEditingController(text: state.wheelTitle);
+    final TextEditingController importController = TextEditingController();
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('LAIRE STUDIO - KONTROL OPERATOR', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+        title: const Text('LAIRE BROADCAST KONTROL', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
         backgroundColor: Colors.black,
-        actions: [
-          Center(child: Padding(padding: const EdgeInsets.only(right: 20), child: Text(state.isSpinning ? "🔴 LIVE: BERPUTAR" : "🟢 STANDBY", style: TextStyle(color: state.isSpinning ? Colors.red : Colors.green, fontWeight: FontWeight.bold, fontSize: 16)))),
-        ],
       ),
       body: Row(
         children: [
-          // KOLOM 1: PENGATURAN VISUAL
+          // KOLOM 1: PENGATURAN & IMPORT
           Expanded(
             flex: 1,
             child: Container(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16),
               decoration: const BoxDecoration(border: Border(right: BorderSide(color: Colors.white12))),
               child: ListView(
                 children: [
-                  const Text("KUSTOMISASI VISUAL", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-                  const Divider(),
+                  const Text("IMPORT DARI SPREADSHEET", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
                   const SizedBox(height: 10),
-                  TextField(controller: titleController, decoration: const InputDecoration(labelText: 'Judul Undian', border: OutlineInputBorder()), onSubmitted: (val) => state.updateTitle(val)),
-                  const SizedBox(height: 15),
-                  ElevatedButton.icon(icon: const Icon(Icons.color_lens), label: const Text('Ubah Warna Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => _showColorPicker(context, state)),
-                  const SizedBox(height: 10),
-                  ElevatedButton.icon(icon: const Icon(Icons.image), label: const Text('Ganti Gambar Latar'), style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)), onPressed: () => state.pickBackgroundImage()),
-                  const SizedBox(height: 40),
-                  
-                  const Text("KONTROL LAYAR", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-                  const Divider(),
-                  const SizedBox(height: 10),
-                  SwitchListTile(
-                    title: const Text("Tampilkan Box Pemenang"),
-                    activeColor: Colors.orangeAccent,
-                    value: state.showWinnerList,
-                    onChanged: (val) => state.toggleWinnerList(),
+                  TextField(
+                    controller: importController,
+                    maxLines: 8,
+                    decoration: const InputDecoration(
+                      hintText: "Copy data dari Excel lalu Paste di sini...\n(Tiap baris akan jadi 1 nomor/nama)",
+                      border: OutlineInputBorder(), filled: true, fillColor: Colors.black45,
+                    ),
                   ),
                   const SizedBox(height: 10),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+                    onPressed: () {
+                      state.importFromSpreadsheet(importController.text);
+                      importController.clear();
+                      FocusScope.of(context).unfocus();
+                    },
+                    child: const Text("IMPORT DATA", style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(height: 30),
+                  
+                  const Text("KUSTOMISASI VISUAL", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+                  const Divider(),
+                  TextField(
+                    decoration: InputDecoration(labelText: 'Judul Event', hintText: state.eventTitle),
+                    onSubmitted: (val) => state.updateTitle(val),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(child: OutlinedButton(onPressed: () => _showColorPicker(context, state), child: const Text('Warna', style: TextStyle(fontSize: 12)))),
+                      const SizedBox(width: 5),
+                      Expanded(child: OutlinedButton(onPressed: () => state.pickBackgroundImage(), child: const Text('Gambar', style: TextStyle(fontSize: 12)))),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.close),
-                    label: const Text('Tutup Popup Pemenang (ESC)'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.all(16)),
-                    onPressed: () => state.clearPopup(),
+                    label: const Text('Tutup Popup Pemenang'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                    onPressed: () => state.clearWinnerPopup(),
                   ),
                 ],
               ),
             ),
           ),
           
-          // KOLOM 2: LIVE PREVIEW & TOMBOL PUTAR
+          // KOLOM 2: LIVE PREVIEW & TOMBOL UNDI
           Expanded(
             flex: 2,
             child: Container(
@@ -367,39 +417,29 @@ class OperatorScreen extends StatelessWidget {
               padding: const EdgeInsets.all(20),
               child: Column(
                 children: [
-                  const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.monitor, color: Colors.white54, size: 18),
-                      SizedBox(width: 8),
-                      Text("LIVE PREVIEW", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.white54)),
-                    ],
-                  ),
+                  const Text("LIVE PREVIEW", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.white54)),
                   const SizedBox(height: 15),
                   Expanded(
                     child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white24, width: 2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                      decoration: BoxDecoration(border: Border.all(color: Colors.amber, width: 2), borderRadius: BorderRadius.circular(10)),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(8),
-                        child: const SpinwheelView(isPreview: true),
+                        child: const RaffleDisplayView(isPreview: true),
                       ),
                     ),
                   ),
                   const SizedBox(height: 20),
                   SizedBox(
-                    width: double.infinity,
-                    height: 60,
+                    width: double.infinity, height: 70,
                     child: ElevatedButton.icon(
-                      icon: const Icon(Icons.play_arrow, size: 30),
-                      label: Text(state.isSpinning ? 'SEDANG BERPUTAR...' : 'PUTAR RODA SEKARANG', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      icon: const Icon(Icons.play_arrow, size: 40),
+                      label: Text(state.isSpinning ? 'MENGACAK...' : 'ACAK PEMENANG SEKARANG', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: state.isSpinning ? Colors.grey : Colors.green,
+                        foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
-                      onPressed: (state.isSpinning || state.participants.isEmpty) ? null : () => state.spin(),
+                      onPressed: (state.isSpinning || state.participants.isEmpty) ? null : () => state.startRaffle(),
                     ),
                   ),
                 ],
@@ -407,90 +447,84 @@ class OperatorScreen extends StatelessWidget {
             ),
           ),
 
-          // KOLOM 3: DAFTAR PESERTA & PEMENANG
+          // KOLOM 3: DAFTAR DATA & STATUS
           Expanded(
             flex: 1,
             child: Container(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16),
               decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white12))),
               child: Column(
                 children: [
-                  // BAGIAN PESERTA
+                  // DATA PESERTA
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("PESERTA RODA", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-                      Text("Total: ${state.participants.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const Text("DATA MASUK", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amber)),
+                      Text("${state.participants.length}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                     ],
                   ),
                   const Divider(),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: nameController,
-                          decoration: const InputDecoration(hintText: 'Nama...', border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10)),
-                          onSubmitted: (val) { state.addParticipant(val); nameController.clear(); },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(14), backgroundColor: Colors.orangeAccent),
-                        onPressed: () { state.addParticipant(nameController.text); nameController.clear(); },
-                        child: const Icon(Icons.add),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
                   Expanded(
-                    flex: 3,
+                    flex: 1,
                     child: ListView.builder(
                       itemCount: state.participants.length,
-                      itemBuilder: (context, index) {
-                        return Card(
-                          color: Colors.white10,
-                          margin: const EdgeInsets.only(bottom: 5),
-                          child: ListTile(
-                            dense: true,
-                            title: Text(state.participants[index]),
-                            trailing: IconButton(icon: const Icon(Icons.close, color: Colors.redAccent, size: 18), onPressed: () => state.removeParticipant(index)),
-                          ),
-                        );
-                      },
+                      itemBuilder: (context, i) => ListTile(
+                        dense: true,
+                        title: Text(state.participants[i], style: const TextStyle(fontFamily: 'Courier', fontWeight: FontWeight.bold)),
+                        trailing: IconButton(icon: const Icon(Icons.delete, color: Colors.red, size: 16), onPressed: () => state.removeParticipant(i)),
+                      ),
                     ),
                   ),
+                  TextButton(onPressed: () => state.clearParticipants(), child: const Text("Hapus Semua Data", style: TextStyle(color: Colors.redAccent))),
+                  
                   const SizedBox(height: 20),
                   
-                  // BAGIAN PEMENANG
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("TELAH MENANG", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                      Text("Total: ${state.winners.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                    ],
-                  ),
+                  // DATA PEMENANG & VERIFIKASI
+                  const Text("HASIL UNDIAN (VERIFIKASI)", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.greenAccent)),
                   const Divider(),
                   Expanded(
                     flex: 2,
                     child: ListView.builder(
                       itemCount: state.winners.length,
-                      itemBuilder: (context, index) {
-                        return ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.emoji_events, color: Colors.amber, size: 18),
-                          title: Text(state.winners[index], style: const TextStyle(color: Colors.white70)),
+                      itemBuilder: (context, i) {
+                        final w = state.winners[i];
+                        bool isHangus = w.status == 'HANGUS';
+                        bool isSah = w.status == 'SAH';
+                        
+                        return Card(
+                          color: isHangus ? Colors.red.withOpacity(0.2) : (isSah ? Colors.green.withOpacity(0.2) : Colors.white10),
+                          child: Padding(
+                            padding: const EdgeInsets.all(8.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(w.name, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, decoration: isHangus ? TextDecoration.lineThrough : null, color: isHangus ? Colors.redAccent : Colors.white)),
+                                const SizedBox(height: 5),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    if (!isSah)
+                                      ElevatedButton(
+                                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 10), minimumSize: Size.zero),
+                                        onPressed: () => state.setWinnerStatus(i, 'SAH'),
+                                        child: const Text("✅ SAH"),
+                                      ),
+                                    const SizedBox(width: 5),
+                                    if (!isHangus)
+                                      ElevatedButton(
+                                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red, padding: const EdgeInsets.symmetric(horizontal: 10), minimumSize: Size.zero),
+                                        onPressed: () => state.setWinnerStatus(i, 'HANGUS'),
+                                        child: const Text("❌ HANGUS"),
+                                      ),
+                                  ],
+                                )
+                              ],
+                            ),
+                          ),
                         );
                       },
                     ),
                   ),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent, side: const BorderSide(color: Colors.redAccent)),
-                      onPressed: () => state.clearAllWinners(),
-                      child: const Text("Reset Data Pemenang"),
-                    ),
-                  )
                 ],
               ),
             ),
@@ -512,15 +546,10 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= KOMPONEN RODA & TAMPILAN DISPLAY =================
-class SpinwheelView extends StatelessWidget {
+// ================= KOMPONEN RAFFLE DISPLAY UTAMA =================
+class RaffleDisplayView extends StatelessWidget {
   final bool isPreview;
-  const SpinwheelView({Key? key, required this.isPreview}) : super(key: key);
-
-  final List<Color> wheelColors = const [
-    Color(0xFFE63946), Color(0xFF457B9D), Color(0xFF2A9D8F),
-    Color(0xFFF4A261), Color(0xFF9D4EDD), Color(0xFFE9C46A)
-  ];
+  const RaffleDisplayView({Key? key, required this.isPreview}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -537,113 +566,126 @@ class SpinwheelView extends StatelessWidget {
       ),
       child: Stack(
         children: [
-          // RODA & JUDUL UTAMA
+          // JUDUL & NOMOR BERGULIR
           Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  state.wheelTitle,
+                  state.eventTitle,
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: isPreview ? 24 : 48, 
+                    fontSize: isPreview ? 20 : 50, 
                     fontWeight: FontWeight.w900, 
-                    color: Colors.white, 
-                    letterSpacing: isPreview ? 2.0 : 4.0, 
-                    shadows: const [Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 4))]
+                    color: Colors.amber, 
+                    letterSpacing: 4.0, 
+                    shadows: const [Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 5))]
                   ),
                 ),
-                SizedBox(height: isPreview ? 20 : 50),
-                if (state.participants.isNotEmpty)
-                  SizedBox(
-                    height: isPreview ? 300 : 600, 
-                    width: isPreview ? 300 : 600,
-                    child: FortuneWheel(
-                      selected: state.spinController.stream,
-                      animateFirst: false,
-                      physics: CircularPanPhysics(duration: const Duration(seconds: 5), curve: Curves.decelerate),
-                      items: [
-                        for (int i = 0; i < state.participants.length; i++)
-                          FortuneItem(
-                            child: Text(state.participants[i], style: TextStyle(fontSize: isPreview ? 14 : 26, fontWeight: FontWeight.bold, color: Colors.white)),
-                            style: FortuneItemStyle(color: wheelColors[i % wheelColors.length], borderColor: Colors.white, borderWidth: isPreview ? 1 : 3),
-                          ),
-                      ],
+                SizedBox(height: isPreview ? 20 : 60),
+                
+                // BOX RAFFLE
+                Container(
+                  width: isPreview ? 250 : 700,
+                  height: isPreview ? 80 : 200,
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: state.isSpinning ? Colors.amber : Colors.white24, width: state.isSpinning ? 4 : 2),
+                    boxShadow: state.isSpinning ? [BoxShadow(color: Colors.amber.withOpacity(0.5), blurRadius: 30, spreadRadius: 5)] : [],
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    state.rollingText ?? (state.participants.isEmpty ? "READY" : "STANDBY"),
+                    style: TextStyle(
+                      fontFamily: 'Courier', // Font gaya mesin tiket / angka
+                      fontSize: isPreview ? 35 : 100,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: 5.0,
                     ),
-                  )
-                else
-                  Text("Belum ada peserta", style: TextStyle(color: Colors.white54, fontSize: isPreview ? 16 : 30)),
+                  ),
+                ),
               ],
             ),
           ),
 
-          // OVERLAY DAFTAR PEMENANG (KANAN)
-          if (state.showWinnerList && state.winners.isNotEmpty)
+          // OVERLAY DAFTAR PEMENANG (KANAN BAWAH)
+          if (!isPreview && state.winners.isNotEmpty)
             Positioned(
-              top: isPreview ? 20 : 50,
-              bottom: isPreview ? 80 : 150, // Hindari menabrak logo di bawah
-              right: isPreview ? 10 : 40,
+              right: 40, bottom: 120,
               child: Container(
-                width: isPreview ? 120 : 300,
-                padding: EdgeInsets.all(isPreview ? 10 : 25),
+                width: 350,
+                padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.8),
+                  color: Colors.black.withOpacity(0.85),
                   borderRadius: BorderRadius.circular(15),
-                  border: Border.all(color: Colors.orangeAccent, width: 2),
+                  border: Border.all(color: Colors.amber, width: 2),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Icon(Icons.emoji_events, color: Colors.amber, size: isPreview ? 14 : 30),
-                        SizedBox(width: isPreview ? 5 : 10),
-                        Text("PEMENANG", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: isPreview ? 12 : 24)),
-                      ],
-                    ),
-                    const Divider(color: Colors.orangeAccent),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: state.winners.length,
-                        itemBuilder: (context, i) {
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text("${i + 1}. ${state.winners[i]}", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: isPreview ? 11 : 22)),
-                          );
-                        },
-                      ),
-                    ),
+                    const Text("DAFTAR PEMENANG", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.w900, fontSize: 20, letterSpacing: 2)),
+                    const Divider(color: Colors.white24),
+                    ...state.winners.take(5).map((w) {
+                      bool isHangus = w.status == 'HANGUS';
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              w.name, 
+                              style: TextStyle(
+                                fontFamily: 'Courier', 
+                                color: isHangus ? Colors.redAccent : Colors.white, 
+                                fontWeight: FontWeight.bold, 
+                                fontSize: 24,
+                                decoration: isHangus ? TextDecoration.lineThrough : null
+                              )
+                            ),
+                            if (isHangus)
+                              const Text("HANGUS", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 16))
+                            else if (w.status == 'SAH')
+                              const Icon(Icons.check_circle, color: Colors.green)
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    if (state.winners.length > 5)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 10),
+                        child: Text("...dan lainnya", style: TextStyle(color: Colors.white54, fontStyle: FontStyle.italic)),
+                      )
                   ],
                 ),
               ),
             ),
 
-          // LOGO DAN TEKS LAIRE CREATIVE STUDIO (BAWAH TENGAH SOLID PILL)
+          // LOGO LAIRE CREATIVE STUDIO (SOLID PILL - BAWAH TENGAH)
           Positioned(
-            bottom: isPreview ? 10 : 30, 
-            left: 0, 
-            right: 0,
+            bottom: isPreview ? 15 : 40, left: 0, right: 0,
             child: Center(
               child: Container(
-                padding: EdgeInsets.symmetric(horizontal: isPreview ? 15 : 30, vertical: isPreview ? 5 : 12),
+                padding: EdgeInsets.symmetric(horizontal: isPreview ? 20 : 40, vertical: isPreview ? 8 : 15),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7), // Pill solid transparan hitam
-                  borderRadius: BorderRadius.circular(50), // Membentuk kapsul
-                  border: Border.all(color: Colors.white24, width: 1),
-                  boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
+                  color: Colors.black, // Background hitam pekat
+                  borderRadius: BorderRadius.circular(50), 
+                  border: Border.all(color: Colors.amber, width: isPreview ? 1 : 2), // Border emas
+                  boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 15, spreadRadius: 5)],
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Image.asset('assets/Preview-4.png', height: isPreview ? 20 : 40, errorBuilder: (_,__,___) => const SizedBox()),
-                    SizedBox(width: isPreview ? 8 : 15),
+                    Image.asset('assets/Preview-4.png', height: isPreview ? 20 : 45, errorBuilder: (_,__,___) => const Icon(Icons.star, color: Colors.amber)),
+                    SizedBox(width: isPreview ? 10 : 20),
                     Text(
                       "LAIRE CREATIVE STUDIO",
                       style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: isPreview ? 1.5 : 3.0,
-                        fontSize: isPreview ? 10 : 20,
+                        letterSpacing: isPreview ? 1.5 : 4.0,
+                        fontSize: isPreview ? 12 : 22,
                       ),
                     ),
                   ],
@@ -652,35 +694,42 @@ class SpinwheelView extends StatelessWidget {
             ),
           ),
 
-          // POPUP ANIMASI ZOOM IN PEMENANG
-          if (state.winnerName != null)
+          // POPUP ANIMASI ZOOM IN PEMENANG (TENGAH LAYAR)
+          if (state.finalWinner != null)
             Positioned.fill(
               child: Container(
-                color: Colors.black.withOpacity(0.8),
+                color: Colors.black.withOpacity(0.9), // Meredupkan latar belakang sangat pekat
                 child: Center(
                   child: TweenAnimationBuilder<double>(
                     tween: Tween<double>(begin: 0.1, end: 1.0),
-                    duration: const Duration(milliseconds: 1000),
+                    duration: const Duration(milliseconds: 800),
                     curve: Curves.elasticOut,
                     builder: (context, scale, child) {
                       return Transform.scale(
                         scale: scale,
                         child: Container(
-                          padding: EdgeInsets.symmetric(horizontal: isPreview ? 30 : 80, vertical: isPreview ? 20 : 50),
+                          padding: EdgeInsets.symmetric(horizontal: isPreview ? 40 : 100, vertical: isPreview ? 30 : 60),
                           decoration: BoxDecoration(
-                            color: Colors.orangeAccent,
+                            gradient: const LinearGradient(colors: [Color(0xFFD4AF37), Color(0xFFF3E5AB)]), // Gradien Emas
                             borderRadius: BorderRadius.circular(isPreview ? 15 : 30),
-                            border: Border.all(color: Colors.white, width: isPreview ? 2 : 5),
+                            border: Border.all(color: Colors.white, width: isPreview ? 3 : 8),
+                            boxShadow: [BoxShadow(color: Colors.amber.withOpacity(0.4), blurRadius: 100, spreadRadius: 30)],
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text("SELAMAT KEPADA", style: TextStyle(fontSize: isPreview ? 12 : 24, fontWeight: FontWeight.bold, color: Colors.white70)),
-                              SizedBox(height: isPreview ? 5 : 10),
+                              Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: isPreview ? 16 : 30, fontWeight: FontWeight.bold, color: Colors.black87, letterSpacing: 5)),
+                              SizedBox(height: isPreview ? 10 : 20),
                               Text(
-                                state.winnerName!.toUpperCase(),
+                                state.finalWinner!.toUpperCase(),
                                 textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: isPreview ? 35 : 90, fontWeight: FontWeight.w900, color: Colors.white, shadows: const [Shadow(color: Colors.black54, offset: Offset(2, 4), blurRadius: 4)]),
+                                style: TextStyle(
+                                  fontFamily: 'Courier',
+                                  fontSize: isPreview ? 45 : 120, 
+                                  fontWeight: FontWeight.w900, 
+                                  color: Colors.black, 
+                                  shadows: const [Shadow(color: Colors.white, offset: Offset(2, 2), blurRadius: 0)]
+                                ),
                               ),
                             ],
                           ),
