@@ -10,7 +10,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:window_manager/window_manager.dart';
-import 'package:confetti/confetti.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,7 +34,7 @@ void main() async {
 }
 
 enum AppMode { selection, operator, display }
-enum ColorTarget { background, box, popup, logoBg } // Tambah target logoBg
+enum ColorTarget { background, box, popup, logoBg } 
 
 class WinnerData {
   String name;
@@ -55,17 +54,15 @@ class AppState extends ChangeNotifier {
   Color backgroundColor = const Color(0xFF0F172A); 
   Color boxColor = const Color(0xAA000000); 
   Color popupColor = const Color(0xFFD4AF37); 
-  Color logoBgColor = const Color(0xFF000000); // Warna default background logo (Hitam Solid)
+  Color logoBgColor = const Color(0xFF000000); 
   
   String? backgroundBase64; 
   Uint8List? backgroundBytes; 
   bool showWinnerList = false; 
   
   bool isSpinning = false;
-  String? rollingText; 
   String? finalWinner;
   
-  // Audio Players terpisah agar tidak bentrok
   final AudioPlayer spinAudioPlayer = AudioPlayer();
   final AudioPlayer winAudioPlayer = AudioPlayer();
 
@@ -74,7 +71,6 @@ class AppState extends ChangeNotifier {
   Socket? _clientSocket;
   String _socketBuffer = '';
   
-  Timer? _rollTimer;
   StreamSubscription? _audioSub;
   Timer? _fallbackTimer;
 
@@ -126,7 +122,7 @@ class AppState extends ChangeNotifier {
       'bgColor': backgroundColor.value,
       'boxColor': boxColor.value,
       'popupColor': popupColor.value,
-      'logoBgColor': logoBgColor.value, // Kirim warna background logo
+      'logoBgColor': logoBgColor.value,
       'bgBase64': backgroundBase64,
       'showWinnerList': showWinnerList,
     });
@@ -175,7 +171,7 @@ class AppState extends ChangeNotifier {
           backgroundColor = Color(decoded['bgColor']);
           boxColor = Color(decoded['boxColor']);
           popupColor = Color(decoded['popupColor'] ?? 0xFFD4AF37);
-          logoBgColor = Color(decoded['logoBgColor'] ?? 0xFF000000); // Terima warna background logo
+          logoBgColor = Color(decoded['logoBgColor'] ?? 0xFF000000); 
           showWinnerList = decoded['showWinnerList'];
           
           backgroundBase64 = decoded['bgBase64'];
@@ -196,11 +192,15 @@ class AppState extends ChangeNotifier {
           break;
         case 'start_roll':
           try { await spinAudioPlayer.play(AssetSource('spin_sound.mp3')); } catch(e){}
-          _startRollingEffect();
+          isSpinning = true;
+          finalWinner = null;
+          notifyListeners(); // Notify hanya sekali saat mulai
           break;
         case 'stop_roll':
           try { await winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
-          _stopRollingEffect(decoded['winner']);
+          isSpinning = false;
+          finalWinner = decoded['winner'];
+          notifyListeners(); // Notify hanya sekali saat berhenti
           break;
         case 'clear_popup':
           finalWinner = null;
@@ -300,12 +300,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ================= LOGIKA UNDIAN (SINKRONISASI SUARA) =================
+  // ================= LOGIKA UNDIAN =================
   void startRaffle() async {
     if (isSpinning || participants.isEmpty) return;
     
+    isSpinning = true;
+    finalWinner = null;
+    notifyListeners();
+    
     _broadcastCommand('start_roll');
-    _startRollingEffect(); 
 
     try {
       await spinAudioPlayer.play(AssetSource('spin_sound.mp3'));
@@ -325,8 +328,11 @@ class AppState extends ChangeNotifier {
       participants.removeAt(winningIndex);
       winners.insert(0, WinnerData(name: won)); 
       
+      isSpinning = false;
+      finalWinner = won;
+      notifyListeners();
+
       _broadcastCommand('stop_roll', {'winner': won});
-      _stopRollingEffect(won);
 
       try { winAudioPlayer.play(AssetSource('win_sound.mp3')); } catch(e){}
       
@@ -338,25 +344,6 @@ class AppState extends ChangeNotifier {
 
     _audioSub = spinAudioPlayer.onPlayerComplete.listen((_) => finishRaffle());
     _fallbackTimer = Timer(const Duration(seconds: 10), () => finishRaffle());
-  }
-
-  void _startRollingEffect() {
-    isSpinning = true;
-    finalWinner = null;
-    _rollTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
-      if (participants.isNotEmpty) {
-        rollingText = participants[Random().nextInt(participants.length)];
-        notifyListeners();
-      }
-    });
-  }
-
-  void _stopRollingEffect(String winner) {
-    _rollTimer?.cancel();
-    isSpinning = false;
-    rollingText = null;
-    finalWinner = winner;
-    notifyListeners();
   }
 
   @override
@@ -507,7 +494,6 @@ class OperatorScreen extends StatelessWidget {
                     onPressed: () => _showColorPicker(context, state, ColorTarget.popup)
                   ),
                   const SizedBox(height: 8),
-                  // TOMBOL BARU UNTUK WARNA BACKGROUND LOGO
                   ElevatedButton.icon(
                     icon: const Icon(Icons.stadium), 
                     label: const Text('5. Ganti WARNA Background Logo'), 
@@ -708,42 +694,108 @@ class OperatorScreen extends StatelessWidget {
   }
 }
 
-// ================= KOMPONEN RAFFLE DISPLAY UTAMA =================
-class RaffleDisplayView extends StatefulWidget {
+// ================= ISOLASI WIDGET ANIMASI (MENCEGAH BACKGROUND KEDIP) =================
+class RollingTextWidget extends StatefulWidget {
+  final bool isSpinning;
+  final String? finalWinner;
+  final List<String> participants;
   final bool isPreview;
-  const RaffleDisplayView({Key? key, required this.isPreview}) : super(key: key);
+  final Color boxColor;
+
+  const RollingTextWidget({
+    Key? key,
+    required this.isSpinning,
+    required this.finalWinner,
+    required this.participants,
+    required this.isPreview,
+    required this.boxColor,
+  }) : super(key: key);
 
   @override
-  State<RaffleDisplayView> createState() => _RaffleDisplayViewState();
+  State<RollingTextWidget> createState() => _RollingTextWidgetState();
 }
 
-class _RaffleDisplayViewState extends State<RaffleDisplayView> {
-  late ConfettiController _confettiController;
-  String? _previousWinner;
+class _RollingTextWidgetState extends State<RollingTextWidget> {
+  Timer? _timer;
+  String _currentText = "READY";
 
   @override
-  void initState() {
-    super.initState();
-    _confettiController = ConfettiController(duration: const Duration(seconds: 4));
+  void didUpdateWidget(RollingTextWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isSpinning && !oldWidget.isSpinning) {
+      _startRolling();
+    } else if (!widget.isSpinning && oldWidget.isSpinning) {
+      _stopRolling();
+    }
+  }
+
+  void _startRolling() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (widget.participants.isNotEmpty) {
+        setState(() {
+          _currentText = widget.participants[Random().nextInt(widget.participants.length)];
+        });
+      }
+    });
+  }
+
+  void _stopRolling() {
+    _timer?.cancel();
   }
 
   @override
   void dispose() {
-    _confettiController.dispose();
+    _timer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    String displayText = "STANDBY";
+    if (widget.isSpinning) {
+      displayText = _currentText;
+    } else if (widget.finalWinner != null) {
+      displayText = widget.finalWinner!;
+    } else if (widget.participants.isNotEmpty) {
+      displayText = "READY";
+    }
+
+    return Container(
+      width: widget.isPreview ? 250 : 1200,
+      height: widget.isPreview ? 80 : 350,
+      decoration: BoxDecoration(
+        color: widget.boxColor,
+        borderRadius: BorderRadius.circular(widget.isPreview ? 20 : 40),
+        border: Border.all(color: Colors.white24, width: widget.isPreview ? 2 : 4),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        displayText,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontFamily: 'Courier', 
+          fontSize: widget.isPreview ? 35 : 160, 
+          fontWeight: FontWeight.w900, 
+          color: Colors.white, 
+          letterSpacing: widget.isPreview ? 5.0 : 10.0
+        ),
+      ),
+    );
+  }
+}
+
+// ================= KOMPONEN RAFFLE DISPLAY UTAMA =================
+class RaffleDisplayView extends StatelessWidget {
+  final bool isPreview;
+  const RaffleDisplayView({Key? key, required this.isPreview}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
     final state = Provider.of<AppState>(context);
     
-    if (state.finalWinner != null && state.finalWinner != _previousWinner && !widget.isPreview) {
-      _previousWinner = state.finalWinner;
-      _confettiController.play();
-    } else if (state.finalWinner == null) {
-      _previousWinner = null;
-    }
-    
+    // KANVAS VIRTUAL ABSOLUT (1920x1080)
     Widget canvas = Container(
       width: 1920,
       height: 1080,
@@ -773,35 +825,20 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
                 ),
                 const SizedBox(height: 80),
                 
-                // BOX RAFFLE 
-                Container(
-                  width: 1200,
-                  height: 350,
-                  decoration: BoxDecoration(
-                    color: state.boxColor,
-                    borderRadius: BorderRadius.circular(40),
-                    border: Border.all(color: Colors.white24, width: 4), 
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    state.rollingText ?? (state.participants.isEmpty ? "READY" : "STANDBY"),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontFamily: 'Courier', 
-                        fontSize: 160, 
-                        fontWeight: FontWeight.w900, 
-                        color: Colors.white, 
-                        letterSpacing: 10.0
-                    ),
-                  ),
+                // ISOLASI BOX RAFFLE AGAR BACKGROUND TIDAK KEDIP
+                RollingTextWidget(
+                  isSpinning: state.isSpinning,
+                  finalWinner: state.finalWinner,
+                  participants: state.participants,
+                  isPreview: false,
+                  boxColor: state.boxColor,
                 ),
               ],
             ),
           ),
 
           // OVERLAY DAFTAR PEMENANG
-          if (!widget.isPreview && state.showWinnerList && state.winners.isNotEmpty)
+          if (!isPreview && state.showWinnerList && state.winners.isNotEmpty)
             Align(
               alignment: Alignment.centerRight,
               child: Padding(
@@ -847,7 +884,7 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
               ),
             ),
 
-          // LOGO LAIRE CREATIVE STUDIO (WARNA BACKGROUND BISA DIUBAH DARI OPERATOR)
+          // LOGO LAIRE CREATIVE STUDIO
           Align(
             alignment: Alignment.bottomCenter,
             child: Padding(
@@ -855,7 +892,7 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 20),
                 decoration: BoxDecoration(
-                    color: state.logoBgColor, // Background Logo yang bisa diganti
+                    color: state.logoBgColor, 
                     borderRadius: BorderRadius.circular(100), 
                     border: Border.all(color: Colors.amber, width: 3), 
                     boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 20, spreadRadius: 5)]
@@ -872,15 +909,15 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
             ),
           ),
 
-          // POPUP ANIMASI ZOOM IN PEMENANG
+          // POPUP PEMENANG (BLOK HITAM DIHILANGKAN - DIGANTI BAYANGAN HALUS)
           if (state.finalWinner != null)
             Positioned.fill(
               child: Container(
-                color: Colors.black.withOpacity(0.9),
+                color: Colors.black.withOpacity(0.4), // RONA HITAM DIKURANGI DRASTIS (Tidak memblokir layar)
                 child: Center(
                   child: TweenAnimationBuilder<double>(
-                    tween: Tween<double>(begin: 0.1, end: 1.0),
-                    duration: const Duration(milliseconds: 800),
+                    tween: Tween<double>(begin: 0.8, end: 1.0), // Efek Pulsing (Berdenyut)
+                    duration: const Duration(milliseconds: 600),
                     curve: Curves.elasticOut,
                     builder: (context, scale, child) {
                       return Transform.scale(
@@ -888,15 +925,15 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 150, vertical: 100),
                           decoration: BoxDecoration(
-                            color: state.popupColor, 
+                            color: state.popupColor, // Warna disesuaikan dari Operator
                             borderRadius: BorderRadius.circular(50), 
                             border: Border.all(color: Colors.white, width: 10), 
-                            boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.5), blurRadius: 150, spreadRadius: 50)]
+                            boxShadow: [BoxShadow(color: state.popupColor.withOpacity(0.8), blurRadius: 100, spreadRadius: 20)]
                           ),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: 50, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 10, shadows: [Shadow(color: Colors.black87, blurRadius: 20)])),
+                              const Text("🎉 SELAMAT 🎉", style: TextStyle(fontSize: 50, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 10, shadows: [Shadow(color: Colors.black87, blurRadius: 10)])),
                               const SizedBox(height: 40),
                               Text(state.finalWinner!.toUpperCase(), textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontFamily: 'Courier', fontSize: 180, fontWeight: FontWeight.w900, color: Colors.white, shadows: [Shadow(color: Colors.black87, offset: Offset(4, 4), blurRadius: 10)])),
                             ],
@@ -908,26 +945,13 @@ class _RaffleDisplayViewState extends State<RaffleDisplayView> {
                 ),
               ),
             ),
-            
-          // EFEK CONFETTI
-          if (!widget.isPreview)
-            Align(
-              alignment: Alignment.center,
-              child: ConfettiWidget(
-                confettiController: _confettiController,
-                blastDirectionality: BlastDirectionality.explosive,
-                shouldLoop: false,
-                colors: const [Colors.green, Colors.blue, Colors.pink, Colors.orange, Colors.purple, Colors.yellow],
-                numberOfParticles: 150,
-                gravity: 0.1,
-              ),
-            ),
         ],
       ),
     );
 
+    // KUNCI RASIO 16:9 DENGAN FITTEDBOX & LETTERBOX
     return Container(
-      color: Colors.black, 
+      color: Colors.black, // Memberikan garis hitam otomatis jika proyektor bukan 16:9
       child: Center(
         child: AspectRatio(
           aspectRatio: 16 / 9,
